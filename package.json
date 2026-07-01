@@ -2,6 +2,9 @@
   "name": "beehive-simulator",
   "version": "1.0.0",
   "main": "index.ts",
+  "engines": {
+    "node": ">=20.19.4"
+  },
   "scripts": {
     "start": "serve dist --single --listen ${PORT:-3000}",
     "dev": "expo start --web",
