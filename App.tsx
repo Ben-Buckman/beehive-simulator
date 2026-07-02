@@ -1062,7 +1062,7 @@ let globalSimSpeed = 1;
 let globalSimTimeMs = 0;  // accumulated simulated milliseconds since load
 let globalBeeInterval: ReturnType<typeof setInterval> | null = null;
 let onBeeCountUpdate: ((total: number) => void) | null = null; // registered by the hook
-let onForagerUpdate: ((outside: number, stored: number) => void) | null = null;
+let onForagerUpdate: ((foragers: OutsideForager[], stored: number) => void) | null = null;
 let _beeTickN = 0; // throttle population display updates
 let globalPauseNow: number | null = null;  // real timestamp when paused, null when running
 let globalLastActiveSpeed: number = 1;     // speed just before last pause / current speed
@@ -1098,12 +1098,15 @@ type ResourceCellStore = Record<string, ResourceCell>; // "${frameKey}:${r}:${c}
 const resourceCells: ResourceCellStore = {};
 
 interface OutsideForager {
+  id: number;             // unique visual ID
+  spawnTime: number;      // wall time when bee exited the hive
   returnTime: number;     // wall time when forager returns to hive
   homeFrame: string;      // frame the bee originated from
   load: 'nectar' | 'pollen';
   bornAt: number; waxUnits: number; isBuilder: boolean;
 }
 const outsideForagers: OutsideForager[] = [];
+let foragerIdCounter = 0;
 
 let onResourceUpdate: (() => void) | null = null; // registered by hook to trigger re-render
 let getBroodCells: (() => Record<string, number>) | null = null; // registered by hook
@@ -1410,6 +1413,8 @@ function startGlobalBeeTick() {
                 const tripLoad = Math.random() < 0.6 ? 'nectar' as const : 'pollen' as const;
                 if (Math.random() < 0.05) console.log(`[forager] bee EXITS frame=${fk} carrying=${tripLoad} returns in ${(tripReal/1000).toFixed(1)}s real`);
                 outsideForagers.push({
+                  id: foragerIdCounter++,
+                  spawnTime: now,
                   returnTime: now + tripReal * (0.85 + Math.random() * 0.3),
                   homeFrame: fk, load: tripLoad,
                   bornAt: bee.bornAt, waxUnits: bee.waxUnits, isBuilder: bee.isBuilder,
@@ -1488,7 +1493,7 @@ function startGlobalBeeTick() {
       const total = Math.min(MAX_COLONY_SIZE,
         Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0));
       onBeeCountUpdate(total);
-      if (onForagerUpdate) onForagerUpdate(outsideForagers.length, Object.keys(resourceCells).length);
+      if (onForagerUpdate) onForagerUpdate([...outsideForagers], Object.keys(resourceCells).length);
     }
     for (const cb of beeTickListeners) cb();
   }, BEE_TICK_MS);
@@ -1693,8 +1698,9 @@ function useHiveSimulation() {
   const pauseStartRef       = useRef<number | null>(null);
   const lastActiveSpeedRef  = useRef(1); // speed just before last pause
 
-  const [totalAdultBees, setTotalAdultBees] = useState(0);
-  const [foragerStats, setForagerStats]     = useState({ outside: 0, stored: 0 });
+  const [totalAdultBees, setTotalAdultBees]         = useState(0);
+  const [foragerStats, setForagerStats]             = useState({ outside: 0, stored: 0 });
+  const [outsideForagersSnap, setOutsideForagersSnap] = useState<OutsideForager[]>([]);
   const [broodVersion, setBroodVersion]     = useState(0);
   const [resourceVersion, setResourceVersion] = useState(0);
   const [queenFrameKey, setQueenFrameKey]   = useState('4');
@@ -2017,7 +2023,10 @@ function useHiveSimulation() {
     // Register the population display callback and start the global tick
     onBeeCountUpdate = (n) => { totalAdultBeesRef.current = n; setTotalAdultBees(n); };
     onResourceUpdate = () => setResourceVersion(v => v + 1);
-    onForagerUpdate = (outside, stored) => setForagerStats({ outside, stored });
+    onForagerUpdate = (foragers, stored) => {
+      setForagerStats({ outside: foragers.length, stored });
+      setOutsideForagersSnap([...foragers]);
+    };
     getBroodCells  = () => broodRef.current;
     getDrawnCells  = () => drawnCellsRef.current;
     startGlobalBeeTick();
@@ -2368,7 +2377,7 @@ function useHiveSimulation() {
     queenRef, queenFrameKey, totalAdultBees, foragerStats, layCount, getCellOverrides,
     boxStack, boxFrames, drawnCells,
     simSpeed, setSimSpeed, boostPopulation, killPopulation,
-    getCellInfo,
+    getCellInfo, outsideForagersSnap,
     addBox, removeBox, addFrame, removeFrame,
   };
 }
@@ -2493,18 +2502,6 @@ function makePath(
   return { xs, ys };
 }
 
-type BeeData = {
-  id: number;
-  flyXs: number[]; flyYs: number[];
-  flyDuration: number;
-  landX: number;
-  walkDuration: number;
-  delay: number;
-  size: number;
-  goingOut: boolean;
-  wobbleAmp: number; wobblePeriod: number;
-};
-
 function seeded(seed: number) {
   let s = seed;
   return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
@@ -2575,111 +2572,120 @@ const CLOUD_DATA: CloudDatum[] = (() => {
   ];
 })();
 
-const BEES: BeeData[] = (() => {
-  const rand = seeded(42);
-  const boardHalf = (HIVE_W + 14) / 2;
-  const entHalf   = ENTRANCE_W / 2;
-  return Array.from({ length: 14 }, (_, i) => {
-    const goingOut = i % 2 === 0;
-    const side = rand() > 0.5 ? 1 : -1;
-    const landX = ENT_X + side * (entHalf + 5 + rand() * (boardHalf - entHalf - 8));
-    const offTop = rand() > 0.3;
-    const farX = offTop ? ENT_X + side * (50 + rand() * W * 0.38) : (side > 0 ? W + 60 : -60);
-    const farY = offTop ? -(25 + rand() * 60) : LAND_Y - (70 + rand() * H * 0.28);
-    const path = goingOut
-      ? makePath(landX, LAND_Y, landX + side * 20, LAND_Y - 35, farX - side * 45, farY + 65, farX, farY)
-      : makePath(farX, farY, farX - side * 45, farY + 65, landX + side * 20, LAND_Y - 35, landX, LAND_Y);
-    const flyDuration  = goingOut ? 1800 + rand() * 1200 : 2800 + rand() * 1800;
-    const walkDuration = Math.abs(landX - ENT_X) * 14;
+
+// ── ForagerBee — visual tied to a real outsideForager entry ──────────────────
+
+function ForagerBee({ forager }: { forager: OutsideForager }) {
+  type Phase = 'walk_out' | 'fly_out' | 'away' | 'fly_in' | 'walk_in';
+  const [phase, setPhase] = useState<Phase>('walk_out');
+
+  const { landX, flyOutXs, flyOutYs, flyInXs, flyInYs, flyOutMs, flyInMs, walkMs, size, wobbleAmp, wobblePeriod } = useMemo(() => {
+    const r = seeded(forager.id * 97 + 17);
+    const side = r() > 0.5 ? 1 : -1;
+    const boardHalf = (HIVE_W + 14) / 2;
+    const entHalf   = ENTRANCE_W / 2;
+    const lx  = ENT_X + side * (entHalf + 5 + r() * (boardHalf - entHalf - 8));
+    const offTop = r() > 0.3;
+    const fx  = offTop ? ENT_X + side * (50 + r() * W * 0.38) : (side > 0 ? W + 60 : -60);
+    const fy  = offTop ? -(25 + r() * 60) : LAND_Y - (70 + r() * H * 0.28);
+    const outPath = makePath(lx, LAND_Y, lx + side * 20, LAND_Y - 35, fx - side * 45, fy + 65, fx, fy);
+    const inPath  = makePath(fx, fy, fx - side * 45, fy + 65, lx + side * 20, LAND_Y - 35, lx, LAND_Y);
+    const tripMs  = Math.max(forager.returnTime - forager.spawnTime, 200);
+    const foMs    = Math.min(2500, tripMs * 0.35);
+    const fiMs    = Math.min(3000, tripMs * 0.40);
+    const wkMs    = Math.abs(lx - ENT_X) * 14;
     return {
-      id: i, flyXs: path.xs, flyYs: path.ys, flyDuration,
-      landX, walkDuration,
-      delay: rand() * 4500, size: 1.5 + rand() * 0.7, goingOut,
-      wobbleAmp: 1 + rand() * 1, wobblePeriod: 220 + rand() * 130,
+      landX: lx, flyOutXs: outPath.xs, flyOutYs: outPath.ys,
+      flyInXs: inPath.xs, flyInYs: inPath.ys,
+      flyOutMs: foMs, flyInMs: fiMs, walkMs: wkMs,
+      size: 1.5 + r() * 0.7, wobbleAmp: 1 + r(), wobblePeriod: 220 + r() * 130,
     };
-  });
-})();
+  }, [forager.id]);
 
-// ── Bee component ────────────────────────────────────────────────────────────
-
-function Bee({ data }: { data: BeeData }) {
-  const flyProg  = useRef(new Animated.Value(0)).current;
-  const walkProg = useRef(new Animated.Value(0)).current;
+  const prog    = useRef(new Animated.Value(0)).current;
   const wingAnim = useRef(new Animated.Value(0)).current;
   const wobbleX  = useRef(new Animated.Value(0)).current;
   const wobbleY  = useRef(new Animated.Value(0)).current;
 
-  const N = data.flyXs.length;
-  const flyRange = Array.from({ length: N }, (_, i) => i / (N - 1));
-
-  const flyX = flyProg.interpolate({ inputRange: flyRange, outputRange: data.flyXs });
-  const flyY = flyProg.interpolate({ inputRange: flyRange, outputRange: data.flyYs });
-
-  const walkOffset = data.goingOut
-    ? walkProg.interpolate({ inputRange: [0, 1], outputRange: [ENT_X - data.landX, 0] })
-    : walkProg.interpolate({ inputRange: [0, 1], outputRange: [0, ENT_X - data.landX] });
-
-  const wobOffX = wobbleX.interpolate({ inputRange: [-1, 0, 1], outputRange: [-data.wobbleAmp, 0, data.wobbleAmp] });
-  const wobOffY = wobbleY.interpolate({ inputRange: [-1, 0, 1], outputRange: [-data.wobbleAmp * 0.6, 0, data.wobbleAmp * 0.6] });
-
-  const translateX = Animated.add(Animated.add(flyX, walkOffset), wobOffX);
-  const translateY = Animated.add(flyY, wobOffY);
-
-  const wingScaleY = wingAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.12] });
-
-  const opacity = data.goingOut
-    ? walkProg.interpolate({ inputRange: [0, 0.10, 1], outputRange: [0, 1, 1] })
-    : walkProg.interpolate({ inputRange: [0, 0.90, 1], outputRange: [1, 1, 0] });
-
+  // Wing flap + wobble loops (fire once on mount)
   useEffect(() => {
     Animated.loop(Animated.sequence([
       Animated.timing(wingAnim, { toValue: 1, duration: 60, useNativeDriver: true }),
       Animated.timing(wingAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
     ])).start();
-
-    const phase = data.id % 2 === 0 ? 1 : -1;
-    wobbleX.setValue(phase * 0.4);
-    wobbleY.setValue(-phase * 0.3);
     Animated.loop(Animated.sequence([
-      Animated.timing(wobbleX, { toValue: 1,  duration: data.wobblePeriod,       useNativeDriver: true }),
-      Animated.timing(wobbleX, { toValue: -1, duration: data.wobblePeriod,       useNativeDriver: true }),
+      Animated.timing(wobbleX, { toValue: 1,  duration: wobblePeriod,       useNativeDriver: true }),
+      Animated.timing(wobbleX, { toValue: -1, duration: wobblePeriod,       useNativeDriver: true }),
     ])).start();
     Animated.loop(Animated.sequence([
-      Animated.timing(wobbleY, { toValue: 1,  duration: data.wobblePeriod * 1.3, useNativeDriver: true }),
-      Animated.timing(wobbleY, { toValue: -1, duration: data.wobblePeriod * 1.3, useNativeDriver: true }),
+      Animated.timing(wobbleY, { toValue: 1,  duration: wobblePeriod * 1.3, useNativeDriver: true }),
+      Animated.timing(wobbleY, { toValue: -1, duration: wobblePeriod * 1.3, useNativeDriver: true }),
     ])).start();
-
-    const flyAnim  = () => Animated.timing(flyProg,  { toValue: 1, duration: data.flyDuration,  easing: data.goingOut ? Easing.in(Easing.quad) : Easing.out(Easing.cubic), useNativeDriver: true });
-    const walkAnim = () => Animated.timing(walkProg, { toValue: 1, duration: data.walkDuration, easing: Easing.linear, useNativeDriver: true });
-
-    const cycle = () => {
-      flyProg.setValue(0);
-      walkProg.setValue(0);
-      if (data.goingOut) {
-        Animated.sequence([
-          Animated.delay(data.delay),
-          walkAnim(),
-          flyAnim(),
-        ]).start(cycle);
-      } else {
-        Animated.sequence([
-          flyAnim(),
-          walkAnim(),
-          Animated.delay(data.delay),
-        ]).start(cycle);
-      }
-    };
-    cycle();
   }, []);
 
-  const bw = data.size * 3.5, bh = data.size;
+  // Phase-driven animation — each phase transition kicks off next segment
+  useEffect(() => {
+    prog.setValue(0);
+    if (phase === 'walk_out') {
+      Animated.timing(prog, { toValue: 1, duration: walkMs, easing: Easing.linear, useNativeDriver: false })
+        .start(({ finished }) => { if (finished) setPhase('fly_out'); });
+    } else if (phase === 'fly_out') {
+      Animated.timing(prog, { toValue: 1, duration: flyOutMs, easing: Easing.in(Easing.quad), useNativeDriver: false })
+        .start(({ finished }) => { if (finished) setPhase('away'); });
+    } else if (phase === 'away') {
+      const flyInStart = forager.returnTime - flyInMs - walkMs;
+      const delay = Math.max(0, flyInStart - Date.now());
+      const t = setTimeout(() => setPhase('fly_in'), delay);
+      return () => clearTimeout(t);
+    } else if (phase === 'fly_in') {
+      Animated.timing(prog, { toValue: 1, duration: flyInMs, easing: Easing.out(Easing.cubic), useNativeDriver: false })
+        .start(({ finished }) => { if (finished) setPhase('walk_in'); });
+    } else if (phase === 'walk_in') {
+      prog.setValue(1);
+      Animated.timing(prog, { toValue: 0, duration: walkMs, easing: Easing.linear, useNativeDriver: false }).start();
+    }
+  }, [phase]);
+
+  const N = flyOutXs.length;
+  const flyRange = useMemo(() => Array.from({ length: N }, (_, i) => i / (N - 1)), [N]);
+  const wingScaleY = wingAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.12] });
+  const wobOffX = wobbleX.interpolate({ inputRange: [-1, 0, 1], outputRange: [-wobbleAmp, 0, wobbleAmp] });
+  const wobOffY = wobbleY.interpolate({ inputRange: [-1, 0, 1], outputRange: [-wobbleAmp * 0.6, 0, wobbleAmp * 0.6] });
+
+  if (phase === 'away') return null;
+
+  // Position per phase
+  let tx: Animated.AnimatedInterpolation<number> | Animated.AnimatedAddition;
+  let ty: Animated.AnimatedInterpolation<number> | number;
+
+  if (phase === 'walk_out' || phase === 'walk_in') {
+    // walk_out: prog 0→1 means ENT_X→landX; walk_in: prog 1→0 means landX→ENT_X
+    const baseX = prog.interpolate({ inputRange: [0, 1], outputRange: [ENT_X, landX] });
+    tx = Animated.add(baseX, wobOffX);
+    ty = Animated.add(new Animated.Value(LAND_Y), wobOffY);
+  } else {
+    // fly_out or fly_in
+    const xs = phase === 'fly_out' ? flyOutXs : flyInXs;
+    const ys = phase === 'fly_out' ? flyOutYs : flyInYs;
+    const baseX = prog.interpolate({ inputRange: flyRange, outputRange: xs });
+    const baseY = prog.interpolate({ inputRange: flyRange, outputRange: ys });
+    tx = Animated.add(baseX, wobOffX);
+    ty = Animated.add(baseY, wobOffY);
+  }
+
+  const bw = size * 3.5, bh = size;
+  // Pollen bees get yellow legs indicator; nectar bees slightly larger
+  const bodyColor = forager.load === 'pollen' ? '#D4800A' : '#E8960A';
   return (
-    <Animated.View style={{ position: 'absolute', top: 0, left: 0, opacity, transform: [{ translateX }, { translateY }] }}>
+    <Animated.View style={{ position: 'absolute', top: 0, left: 0, transform: [{ translateX: tx as any }, { translateY: ty as any }] }}>
       <Animated.View style={{ position: 'absolute', top: -bh * 0.9, left: 0, flexDirection: 'row', transform: [{ scaleY: wingScaleY }] }}>
         <View style={{ width: bw * 0.44, height: bh * 1.2, borderRadius: bh, backgroundColor: 'rgba(210,238,255,0.75)', marginRight: 1 }} />
         <View style={{ width: bw * 0.44, height: bh * 1.2, borderRadius: bh, backgroundColor: 'rgba(210,238,255,0.75)' }} />
       </Animated.View>
-      <View style={{ width: bw, height: bh, borderRadius: bh / 2, backgroundColor: '#E8960A' }} />
+      <View style={{ width: bw, height: bh, borderRadius: bh / 2, backgroundColor: bodyColor }} />
+      {forager.load === 'pollen' && (
+        <View style={{ position: 'absolute', left: bw * 0.7, top: bh * 0.1, width: bh * 0.7, height: bh * 0.7, borderRadius: bh * 0.35, backgroundColor: '#F5D020' }} />
+      )}
     </Animated.View>
   );
 }
@@ -3057,7 +3063,7 @@ export default function App() {
     queenRef, queenFrameKey, totalAdultBees, foragerStats, layCount, getCellOverrides,
     boxStack, boxFrames, drawnCells,
     simSpeed, setSimSpeed, boostPopulation, killPopulation,
-    getCellInfo,
+    getCellInfo, outsideForagersSnap,
     addBox, removeBox, addFrame, removeFrame,
   } = useHiveSimulation();
 
@@ -3282,7 +3288,7 @@ export default function App() {
           />
         )}
         <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
-          {BEES.map(bee => <Bee key={bee.id} data={bee} />)}
+          {outsideForagersSnap.map(f => <ForagerBee key={f.id} forager={f} />)}
         </View>
       </View>
     </View>
