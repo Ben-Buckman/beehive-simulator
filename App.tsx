@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { View, StyleSheet, Animated, Easing, Dimensions, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, Animated, Easing, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import Svg, { Path, G, Ellipse } from 'react-native-svg';
 
@@ -1483,8 +1483,10 @@ function startGlobalBeeTick() {
 
           // --- Initiate a foraging trip ---
           if (isForagerAge && !foragerPhase && !load) {
+            const liveBees = Math.max(1, countLiveBees());
+            const outsideCap = Math.max(3, Math.floor(liveBees * MAX_OUTSIDE_FORAGER_FRACTION));
             const probPerTick = FORAGER_TRIP_PROB_PER_S * (BEE_TICK_MS / 1000) * speed2;
-            if (Math.random() < probPerTick) {
+            if (outsideForagers.length < outsideCap && Math.random() < probPerTick) {
               if (Math.random() < 0.05) console.log(`[forager] trip START bee=${bee.id} frame=${fk} isBottomBox=${isBottomBox} age=${(simAge/DAY_MS).toFixed(1)}d`);
               return { ...bee, foragerPhase: 'seeking_exit', tx: bee.x, ty: COMB_H - 1 };
             }
