@@ -51,7 +51,7 @@ const INSPECT_DWELL_MAX_MS   = 3_000;            //                             
 const MAX_COLONY_SIZE        = 50_000;
 const BROOD_CHECK_MS         = 1_000;
 const STORAGE_KEY            = 'hive-sim-v1';
-const APP_LAST_CHANGED       = '2:34 PM EDT';
+const APP_LAST_CHANGED       = '2:38 PM EDT';
 
 // ── Forager / resource constants ──────────────────────────────────────────────
 // Biology: foragers (21d+) make ~10 trips/day; ~60% nectar, ~40% pollen.
@@ -3058,7 +3058,11 @@ function BeeDebugWindow({ onClose }: { onClose: () => void }) {
           <Text key={h} style={{ color: '#B89040', fontSize: 10, fontWeight: '700', flex: [0.45, 0.9, 1.1, 1.6, 0.8, 0.6, 0.7][i] }}>{h}</Text>
         ))}
       </View>
-      <ScrollView style={{ maxHeight: H - 190 }} contentContainerStyle={{ paddingBottom: 4 }}>
+      <ScrollView
+        {...({ id: 'bee-debug-scroll' } as any)}
+        style={{ height: Math.max(120, H - 190) }}
+        contentContainerStyle={{ paddingBottom: 4 }}
+      >
         {rows.map(row => (
           <View key={`${row.location}-${row.id}`} style={{ flexDirection: 'row', paddingVertical: 3, borderBottomWidth: 1, borderColor: 'rgba(80,55,15,0.35)' }}>
             {[`#${row.id}`, row.location, row.role, row.activity, row.age, row.carrying, row.wax].map((v, i) => (
@@ -3276,13 +3280,19 @@ export default function App() {
   useEffect(() => {
     const el = rootRef.current;
     if (!el?.addEventListener) return;
+    const isBeeDebugScroll = (target: EventTarget | null) =>
+      !!(target as Element | null)?.closest?.('#bee-debug-scroll');
     const handler = (e: WheelEvent) => {
+      if (isBeeDebugScroll(e.target)) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - rect.left - W / 2, e.clientY - rect.top - H / 2);
     };
     // Prevent browser-native pinch zoom and scroll on touch devices
-    const preventTouch = (e: TouchEvent) => e.preventDefault();
+    const preventTouch = (e: TouchEvent) => {
+      if (isBeeDebugScroll(e.target)) return;
+      e.preventDefault();
+    };
     el.addEventListener('wheel', handler, { passive: false });
     el.addEventListener('touchmove', preventTouch, { passive: false });
     return () => {
