@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { View, StyleSheet, Animated, Easing, Dimensions, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, Animated, Easing, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import Svg, { Path, G, Ellipse } from 'react-native-svg';
 
@@ -3033,7 +3033,7 @@ function BeeDebugWindow({ onClose }: { onClose: () => void }) {
           <Text key={h} style={{ color: '#B89040', fontSize: 10, fontWeight: '700', flex: [0.45, 0.9, 1.1, 1.6, 0.8, 0.6, 0.7][i] }}>{h}</Text>
         ))}
       </View>
-      <View style={{ maxHeight: H - 190, overflow: 'scroll' as any }}>
+      <ScrollView style={{ maxHeight: H - 190 }} contentContainerStyle={{ paddingBottom: 4 }}>
         {rows.map(row => (
           <View key={`${row.location}-${row.id}`} style={{ flexDirection: 'row', paddingVertical: 3, borderBottomWidth: 1, borderColor: 'rgba(80,55,15,0.35)' }}>
             {[`#${row.id}`, row.location, row.role, row.activity, row.age, row.carrying, row.wax].map((v, i) => (
@@ -3041,7 +3041,7 @@ function BeeDebugWindow({ onClose }: { onClose: () => void }) {
             ))}
           </View>
         ))}
-      </View>
+      </ScrollView>
     </View>
   );
 }
