@@ -63,6 +63,7 @@ const FORAGER_TRIP_MS          = 2  * HOUR_MS;   // simulated foraging trip dura
 const TROPHALLAXIS_MS          = 3  * 60_000;    // simulated trophallaxis duration
 const NECTAR_TO_HONEY_MS       = 2  * DAY_MS;    // simulated nectar→honey conversion
 const FORAGER_TRIP_PROB_PER_S  = 10 / (24 * 60 * 60); // ~10 trips/day per forager
+const DEBUG_FORAGERS           = false;
 
 // ── Comb drawing (wax building) ───────────────────────────────────────────────
 // Biology: colony draws ~1 full frame (≈1,800 hex cells in COMB_W×COMB_H) in
@@ -288,6 +289,9 @@ const BLANK_BROOD_ZONE: Array<{r:number;c:number;cx:number;cy:number}> = (() => 
 function frameSeedOf(frameKey: string): number {
   const n = parseInt(frameKey);
   return isNaN(n) ? 0 : n + 1;  // 0 = blank
+}
+function cellsForFrameKey(frameKey: string): CellInfo[] {
+  return generateCells(COMB_W, COMB_H, frameSeedOf(frameKey));
 }
 function getFrameZoneCells(frameKey: string): Array<{r:number;c:number;cx:number;cy:number}> {
   const n = parseInt(frameKey);
@@ -1215,7 +1219,7 @@ function startGlobalBeeTick() {
       const broodSnap = getBroodCells?.() ?? {};
 
       // Debug: log forager stats every ~5 seconds of real time
-      if (_beeTickN % 62 === 0) {
+      if (DEBUG_FORAGERS && _beeTickN % 62 === 0) {
         let foragerAgeCount = 0, seekingCount = 0, returningCount = 0, depositingCount = 0;
         for (const store of Object.values(frameBeeStore)) {
           for (const bee of store.bees) {
@@ -1248,7 +1252,7 @@ function startGlobalBeeTick() {
           const targetFk = bottomFrames2[Math.floor(Math.random() * bottomFrames2.length)];
           const store = frameBeeStore[targetFk];
           if (!store) { console.warn('[forager] no store for', targetFk, 'discarding'); releaseBeeId(of_.id); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
-          console.log(`[forager] bee RETURNS to frame=${targetFk} carrying=${of_.load}`);
+          if (DEBUG_FORAGERS) console.log(`[forager] bee RETURNS to frame=${targetFk} carrying=${of_.load}`);
           const injectX = COMB_W * (0.2 + Math.random() * 0.6);
           const newBee: SimBee = {
             id: of_.id, x: injectX, y: COMB_H - 1,
@@ -1450,7 +1454,7 @@ function startGlobalBeeTick() {
               if (isBottomBox) {
                 const tripReal = FORAGER_TRIP_MS / speed2;
                 const tripLoad = Math.random() < 0.6 ? 'nectar' as const : 'pollen' as const;
-                if (Math.random() < 0.05) console.log(`[forager] bee EXITS frame=${fk} carrying=${tripLoad} returns in ${(tripReal/1000).toFixed(1)}s real`);
+                if (DEBUG_FORAGERS && Math.random() < 0.05) console.log(`[forager] bee EXITS frame=${fk} carrying=${tripLoad} returns in ${(tripReal/1000).toFixed(1)}s real`);
                 outsideForagers.push({
                   id: bee.id,
                   spawnTime: now,
@@ -1485,7 +1489,7 @@ function startGlobalBeeTick() {
           if (isForagerAge && !foragerPhase && !load) {
             const probPerTick = FORAGER_TRIP_PROB_PER_S * (BEE_TICK_MS / 1000) * speed2;
             if (Math.random() < probPerTick) {
-              if (Math.random() < 0.05) console.log(`[forager] trip START bee=${bee.id} frame=${fk} isBottomBox=${isBottomBox} age=${(simAge/DAY_MS).toFixed(1)}d`);
+              if (DEBUG_FORAGERS && Math.random() < 0.05) console.log(`[forager] trip START bee=${bee.id} frame=${fk} isBottomBox=${isBottomBox} age=${(simAge/DAY_MS).toFixed(1)}d`);
               return { ...bee, foragerPhase: 'seeking_exit', tx: bee.x, ty: COMB_H - 1 };
             }
           }
@@ -2016,6 +2020,7 @@ function useHiveSimulation() {
     nextBeeId = 1;
     recycledBeeIds.length = 0;
     setOutsideForagersSnap([]);
+    const loadedFrameKeys = new Set(Object.values(bf).flat().filter((x): x is string => x !== null));
     // Load saved resources, validating each key against the current cell grid.
     // Old saves may have r:c values outside the current grid, or as floats — discard/normalize.
     if (state.resourceCells) {
@@ -2025,11 +2030,10 @@ function useHiveSimulation() {
         const parts = key.split(':');
         if (parts.length !== 3) { discarded++; continue; }
         const [fk, rStr, cStr] = parts;
-        const n = parseInt(fk);
         const r = parseInt(rStr), c = parseInt(cStr);
-        if (isNaN(n) || isNaN(r) || isNaN(c)) { discarded++; continue; }
+        if (!loadedFrameKeys.has(fk) || isNaN(r) || isNaN(c)) { discarded++; continue; }
         if (!validCellCache.has(fk)) {
-          const validCells = generateCells(COMB_W, COMB_H, n + 1);
+          const validCells = cellsForFrameKey(fk);
           validCellCache.set(fk, new Set(validCells.map(cell => `${cell.r}:${cell.c}`)));
         }
         if (validCellCache.get(fk)!.has(`${r}:${c}`)) {
@@ -2039,7 +2043,7 @@ function useHiveSimulation() {
           discarded++;
         }
       }
-      console.log(`[load] resourceCells: kept=${kept} discarded=${discarded} total=${kept+discarded}`);
+      if (DEBUG_FORAGERS) console.log(`[load] resourceCells: kept=${kept} discarded=${discarded} total=${kept+discarded}`);
     }
 
     // Pad any box frame array shorter than 10 (backward compat with pre-null-slot saves)
@@ -2355,15 +2359,16 @@ function useHiveSimulation() {
       const stage = getLifeStage(layTime, now, speed);
       return { kind: 'brood', r, c, frameKey, layTime, realAgoMs, simAgoMs, stage: stage.type, emerged: stage.emerged, realRemMs, simRemMs };
     }
+    const rcKey = `${frameKey}:${r}:${c}`;
+    const rc = resourceCells[rcKey];
     const isBlank = frameKey.startsWith('n');
     if (isBlank) {
       const drawn = drawnCellsRef.current[frameKey] ?? [];
       const isDrawn = new Set(drawn).has(`${r}:${c}`);
-      return { kind: 'static', r, c, frameKey, cellType: isDrawn ? 'empty' : 'foundation' };
+      if (!isDrawn) return { kind: 'static', r, c, frameKey, cellType: 'foundation' };
+      return { kind: 'static', r, c, frameKey, cellType: rc?.kind ?? 'empty' };
     }
     // Check live resource cells (honey/nectar/pollen deposited by bees)
-    const rcKey = `${frameKey}:${r}:${c}`;
-    const rc = resourceCells[rcKey];
     if (rc) return { kind: 'static', r, c, frameKey, cellType: rc.kind };
     return { kind: 'static', r, c, frameKey, cellType: 'empty' };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
