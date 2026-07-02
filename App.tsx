@@ -51,6 +51,7 @@ const INSPECT_DWELL_MAX_MS   = 3_000;            //                             
 const MAX_COLONY_SIZE        = 50_000;
 const BROOD_CHECK_MS         = 1_000;
 const STORAGE_KEY            = 'hive-sim-v1';
+const APP_LAST_CHANGED       = '2:34 PM EDT';
 
 // ── Forager / resource constants ──────────────────────────────────────────────
 // Biology: foragers (21d+) make ~10 trips/day; ~60% nectar, ~40% pollen.
@@ -2918,6 +2919,30 @@ function PopulationDisplay({ total, layCount, foragerOutside, resourceStored, si
   );
 }
 
+function VersionText() {
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: 16,
+        bottom: IS_MOBILE ? 28 : 50,
+        zIndex: 320,
+        backgroundColor: 'rgba(20,10,0,0.58)',
+        borderWidth: 1,
+        borderColor: 'rgba(240,192,80,0.20)',
+        borderRadius: 5,
+        paddingHorizontal: 6,
+        paddingVertical: 3,
+      }}
+    >
+      <Text style={{ color: '#D8B860', fontSize: 9, fontWeight: '700' }}>
+        v {APP_LAST_CHANGED}
+      </Text>
+    </View>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 type Viewport = { zoom: number; x: number; y: number };
@@ -3353,6 +3378,7 @@ export default function App() {
       <DevHUD info={devHoverInfo} />
       {IS_MOBILE && <Crosshair />}
       <PopulationDisplay total={totalAdultBees} layCount={layCount} foragerOutside={foragerStats.outside} resourceStored={foragerStats.stored} simSpeed={simSpeed} />
+      <VersionText />
       <TouchableOpacity
         onPress={() => setShowBeeDebug(v => !v)}
         style={{ position: 'absolute', top: 92, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.86)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#6B4A12' }}
