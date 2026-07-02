@@ -830,15 +830,21 @@ function PulledFrameView({
     ]).start();
   }, []);
 
-  // Mobile: resolve hover info from crosshair position at screen center
+  const combRef = useRef<any>(null);
+
+  // Mobile: resolve hover info by measuring the comb's actual screen rect.
+  // getBoundingClientRect() includes the viewport zoom transform, so the math is exact.
   useEffect(() => {
     if (!crosshairWorld || !onHoverInfo) return;
-    const combWorldX = faceX + FACE_SIDE_BAR;
-    const combWorldY = faceY + TOOLBAR_H + FACE_TOP_BAR;
-    const px = crosshairWorld.x - combWorldX;
-    const py = crosshairWorld.y - combWorldY;
-    if (px >= 0 && px <= COMB_W && py >= 0 && py <= COMB_H) {
-      resolveHoverAt(px, py);
+    const el = combRef.current;
+    const rect = el?.getBoundingClientRect?.();
+    if (!rect || rect.width === 0) return;
+    const sx = W / 2, sy = H / 2;
+    if (sx >= rect.left && sx <= rect.right && sy >= rect.top && sy <= rect.bottom) {
+      resolveHoverAt(
+        (sx - rect.left) * COMB_W / rect.width,
+        (sy - rect.top) * COMB_H / rect.height,
+      );
     } else {
       onHoverInfo(null);
     }
@@ -947,6 +953,7 @@ function PulledFrameView({
           <View style={{ flex: 1 }}>
             <View style={{ height: FACE_TOP_BAR, backgroundColor: '#7A5028' }} />
             <View
+              ref={combRef}
               style={{ width: COMB_W, height: COMB_H }}
               onMouseMove={handleCombHover as any}
               onMouseLeave={() => onHoverInfo?.(null)}
