@@ -954,9 +954,11 @@ function PulledFrameView({
             <View style={{ height: FACE_TOP_BAR, backgroundColor: '#7A5028' }} />
             <View
               ref={combRef}
-              style={{ width: COMB_W, height: COMB_H }}
-              onMouseMove={handleCombHover as any}
-              onMouseLeave={() => onHoverInfo?.(null)}
+              {...({
+                style: { width: COMB_W, height: COMB_H },
+                onMouseMove: handleCombHover,
+                onMouseLeave: () => onHoverInfo?.(null),
+              } as any)}
             >
               <HexComb width={COMB_W} height={COMB_H} seed={frameSeed} overrides={overrides} drawnSet={drawnSet} frameKey={frameKey} />
               <FrameBeeLayer frameKey={frameKey} drawFrontierY={drawFrontierY} beesExternalRef={beesForHit} />
@@ -1321,7 +1323,7 @@ function startGlobalBeeTick() {
               // Migrated frame — re-pick
               const cell = findResourceDepositCell(fk, 'nectar', broodSnap, resourceCells);
               return cell
-                ? { ...bee, cellTarget: { frameKey: fk, ...cell }, tx: cell.cx, ty: cell.cy }
+                ? { ...bee, cellTarget: { ...cell, frameKey: fk }, tx: cell.cx, ty: cell.cy }
                 : { ...bee, receiverPhase: undefined, load: null, cellTarget: undefined, dwell: 300 };
             }
             const dist = Math.hypot(bee.x - cellTarget.cx, bee.y - cellTarget.cy);
