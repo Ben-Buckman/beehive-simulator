@@ -366,9 +366,13 @@ function depositNectarCluster(
   clusterSize = 3,
 ): void {
   const n = parseInt(frameKey);
-  if (isNaN(n)) return;
-  const fi = n % 10;
-  const allCells = generateCells(COMB_W, COMB_H, n + 1);
+  const isBlankKey = isNaN(n);
+  const fi = isBlankKey ? frameSlotIndex(frameKey) : n % 10;
+  const seedNum = isBlankKey ? (parseInt(frameKey.slice(1)) || 0) + 1 : n + 1;
+  const drawnSet = isBlankKey
+    ? new Set(getDrawnCells?.()[frameKey] ?? [])
+    : null;
+  const allCells = generateCells(COMB_W, COMB_H, seedNum);
   const cellIndex = new Map(allCells.map(c => [`${c.r}:${c.c}`, c]));
   const visited = new Set<string>();
   const queue: Array<{r:number;c:number}> = [seed];
@@ -379,7 +383,9 @@ function depositNectarCluster(
     const curr = queue.shift()!;
     const key = `${frameKey}:${curr.r}:${curr.c}`;
     // Seed cell is pre-validated by findResourceDepositCell; neighbours must also be in the nectar zone
-    if (!(key in brood) && !(key in resources) && (first || isNectarZone(curr.r, curr.c, fi))) {
+    const cellKey = `${curr.r}:${curr.c}`;
+    const drawnOk = !drawnSet || drawnSet.has(cellKey);
+    if (drawnOk && !(key in brood) && !(key in resources) && (first || isNectarZone(curr.r, curr.c, fi))) {
       resources[key] = { kind: 'nectar', depositedAt: now };
       deposited++;
     }
@@ -1118,6 +1124,14 @@ function emitForagerUpdate() {
   if (onForagerUpdate) onForagerUpdate([...outsideForagers], Object.keys(resourceCells).length);
 }
 
+function clearFrameStores(frameKey: string): void {
+  delete frameBeeStore[frameKey];
+  const prefix = `${frameKey}:`;
+  for (const k of Object.keys(resourceCells)) {
+    if (k.startsWith(prefix)) delete resourceCells[k];
+  }
+}
+
 // Fraction of bees in the edge zone that cross per tick (~15 %).
 const MIGRATE_EDGE = 2;    // px from left/right boundary
 const MIGRATE_PROB = 0.15;
@@ -1784,14 +1798,22 @@ function useHiveSimulation() {
         setQueenFrameKey(newFk);
       }
     }
-    // Clean up brood and bee stores for removed box
+    // Clean up brood, resource, drawn-comb, and bee stores for removed box
+    let drawnChanged = false;
     for (const fk of frames) {
-      delete frameBeeStore[fk];
+      clearFrameStores(fk);
       const prefix = `${fk}:`;
       for (const k of Object.keys(broodRef.current)) {
         if (k.startsWith(prefix)) delete broodRef.current[k];
       }
+      if (fk in drawnCellsRef.current) {
+        delete drawnCellsRef.current[fk];
+        drawnChanged = true;
+      }
     }
+    if (drawnChanged) setDrawnCells({ ...drawnCellsRef.current });
+    onResourceUpdate?.();
+    emitForagerUpdate();
     setBoxStack(prev => prev.filter(b => b !== boxId));
     setBoxFrames(prev => { const next = { ...prev }; delete next[boxId]; return next; });
   }, []);
@@ -1829,7 +1851,7 @@ function useHiveSimulation() {
       toStore.bees = [...toStore.bees, ...migrating];
     }
     // Clean up removed frame
-    delete frameBeeStore[removed];
+    clearFrameStores(removed);
     const prefix = `${removed}:`;
     for (const k of Object.keys(broodRef.current)) {
       if (k.startsWith(prefix)) delete broodRef.current[k];
@@ -1851,6 +1873,8 @@ function useHiveSimulation() {
       delete drawnCellsRef.current[removed];
       setDrawnCells({ ...drawnCellsRef.current });
     }
+    onResourceUpdate?.();
+    emitForagerUpdate();
     setBoxFrames(prev => {
       const slots = [...(prev[boxId] ?? [])] as (string | null)[];
       slots[slotIdx] = null;
