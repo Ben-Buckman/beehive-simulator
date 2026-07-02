@@ -62,8 +62,7 @@ const RECEIVER_AGE_MAX_MS      = 18 * DAY_MS;
 const FORAGER_TRIP_MS          = 2  * HOUR_MS;   // simulated foraging trip duration
 const TROPHALLAXIS_MS          = 3  * 60_000;    // simulated trophallaxis duration
 const NECTAR_TO_HONEY_MS       = 2  * DAY_MS;    // simulated nectar→honey conversion
-const FORAGER_TRIP_PROB_PER_S  = 50 / (24 * 60 * 60); // visible sim: ~50 trip checks/day per eligible forager
-const MAX_OUTSIDE_FORAGER_FRACTION = 0.08;            // cap visible flyers so the exterior never overwhelms frame bees
+const FORAGER_TRIP_PROB_PER_S  = 10 / (24 * 60 * 60); // ~10 trips/day per forager
 
 // ── Comb drawing (wax building) ───────────────────────────────────────────────
 // Biology: colony draws ~1 full frame (≈1,800 hex cells in COMB_W×COMB_H) in
@@ -2982,7 +2981,7 @@ function getBeeActivity(bee: Pick<SimBee, 'foragerPhase' | 'receiverPhase' | 'ce
   return bee.dwell > 0 ? 'Resting on comb' : 'Walking on comb';
 }
 
-function getBeeDebugRows(limit = 2000): BeeDebugRow[] {
+function getBeeDebugRows(limit = 500): BeeDebugRow[] {
   const now = globalPauseNow ?? Date.now();
   const speed = globalPauseNow !== null ? globalLastActiveSpeed : Math.max(globalSimSpeed, 1);
   const rows: BeeDebugRow[] = [];
@@ -3031,7 +3030,7 @@ function BeeDebugWindow({ onClose }: { onClose: () => void }) {
           <Text key={h} style={{ color: '#B89040', fontSize: 10, fontWeight: '700', flex: [0.45, 0.9, 1.1, 1.6, 0.8, 0.6, 0.7][i] }}>{h}</Text>
         ))}
       </View>
-      <ScrollView style={{ maxHeight: H - 190 }} contentContainerStyle={{ paddingBottom: 8 }} showsVerticalScrollIndicator>
+      <View style={{ maxHeight: H - 190, overflow: 'scroll' as any }}>
         {rows.map(row => (
           <View key={`${row.location}-${row.id}`} style={{ flexDirection: 'row', paddingVertical: 3, borderBottomWidth: 1, borderColor: 'rgba(80,55,15,0.35)' }}>
             {[`#${row.id}`, row.location, row.role, row.activity, row.age, row.carrying, row.wax].map((v, i) => (
@@ -3039,7 +3038,7 @@ function BeeDebugWindow({ onClose }: { onClose: () => void }) {
             ))}
           </View>
         ))}
-      </ScrollView>
+      </View>
     </View>
   );
 }
