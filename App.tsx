@@ -2963,14 +2963,8 @@ function DevHUD({ info }: { info: CellInfoResult | null }) {
 const SPEED_STEPS = [0, 1, 10, 100, 1000, 10000];
 
 function SpeedControl({ speed, onSelect }: { speed: number; onSelect: (s: number) => void }) {
-  const px = IS_MOBILE ? 14 : 8;
-  const py = IS_MOBILE ? 10 : 5;
-  const fs = IS_MOBILE ? 14 : 11;
   return (
-    <View style={{
-      position: 'absolute', bottom: IS_MOBILE ? 24 : 16, left: IS_MOBILE ? 12 : 16, zIndex: 300,
-      flexDirection: 'row', gap: IS_MOBILE ? 6 : 4,
-    }}>
+    <View style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 300, flexDirection: 'row', gap: 4 }}>
       {SPEED_STEPS.map(s => {
         const active = speed === s;
         return (
@@ -2979,18 +2973,77 @@ function SpeedControl({ speed, onSelect }: { speed: number; onSelect: (s: number
             onPress={() => onSelect(s)}
             style={{
               backgroundColor: active ? '#F0C050' : 'rgba(20,10,0,0.72)',
-              paddingHorizontal: px, paddingVertical: py, borderRadius: 7,
-              borderWidth: active ? 0 : 1,
-              borderColor: '#F0C05044',
+              paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7,
+              borderWidth: active ? 0 : 1, borderColor: '#F0C05044',
             }}
           >
-            <Text style={{
-              color: active ? '#1A0800' : '#F0C050',
-              fontSize: fs, fontWeight: '700',
-            }}>{s === 0 ? '⏸' : `${s}×`}</Text>
+            <Text style={{ color: active ? '#1A0800' : '#F0C050', fontSize: 11, fontWeight: '700' }}>
+              {s === 0 ? '⏸' : `${s}×`}
+            </Text>
           </TouchableOpacity>
         );
       })}
+    </View>
+  );
+}
+
+function MobileControls({ speed, onSelect, onBoost, onKill }: {
+  speed: number; onSelect: (s: number) => void; onBoost: () => void; onKill: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const BTN: any = { backgroundColor: 'rgba(14,7,0,0.88)', borderRadius: 10, paddingHorizontal: 16, paddingVertical: 11, borderWidth: 1, borderColor: '#F0C05033' };
+  const LABEL: any = { fontSize: 15, fontWeight: '700' };
+  return (
+    <View style={{ position: 'absolute', bottom: 28, right: 16, zIndex: 400, alignItems: 'flex-end' }}>
+      {open && (
+        <View style={{ marginBottom: 10, alignItems: 'flex-end', gap: 10 }}>
+          {/* Population buttons */}
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity onPress={() => { onBoost(); }} style={[BTN, { borderColor: '#F0C05066' }]}>
+              <Text style={[LABEL, { color: '#F0C050' }]}>+1k bees</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { onKill(); }} style={[BTN, { borderColor: '#FF606066' }]}>
+              <Text style={[LABEL, { color: '#FF6060' }]}>−1k bees</Text>
+            </TouchableOpacity>
+          </View>
+          {/* Speed row */}
+          <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {SPEED_STEPS.map(s => {
+              const active = speed === s;
+              return (
+                <TouchableOpacity
+                  key={s}
+                  onPress={() => { onSelect(s); setOpen(false); }}
+                  style={{
+                    backgroundColor: active ? '#F0C050' : 'rgba(14,7,0,0.88)',
+                    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 9,
+                    borderWidth: active ? 0 : 1, borderColor: '#F0C05044',
+                  }}
+                >
+                  <Text style={{ color: active ? '#1A0800' : '#F0C050', fontSize: 15, fontWeight: '700' }}>
+                    {s === 0 ? '⏸' : `${s}×`}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
+      {/* Toggle FAB — shows current speed */}
+      <TouchableOpacity
+        onPress={() => setOpen(o => !o)}
+        style={{
+          backgroundColor: open ? '#F0C050' : 'rgba(14,7,0,0.92)',
+          paddingHorizontal: 18, paddingVertical: 12, borderRadius: 12,
+          borderWidth: open ? 0 : 1, borderColor: '#F0C05066',
+          flexDirection: 'row', alignItems: 'center', gap: 8,
+        }}
+      >
+        <Text style={{ color: open ? '#1A0800' : '#F0C050', fontSize: 15, fontWeight: '700' }}>
+          {speed === 0 ? '⏸' : `${speed}×`}
+        </Text>
+        <Text style={{ color: open ? '#1A0800' : '#F0C05099', fontSize: 13 }}>{open ? '✕' : '⚙'}</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -3133,21 +3186,24 @@ export default function App() {
       <DevHUD info={devHoverInfo} />
       {IS_MOBILE && <Crosshair />}
       <PopulationDisplay total={totalAdultBees} layCount={layCount} foragerOutside={foragerStats.outside} resourceStored={foragerStats.stored} simSpeed={simSpeed} />
-      <SpeedControl speed={simSpeed} onSelect={setSimSpeed} />
-
-      {/* Population cheat buttons (dev) */}
-      <TouchableOpacity
-        onPress={boostPopulation}
-        style={{ position: 'absolute', bottom: IS_MOBILE ? 24 : 16, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: IS_MOBILE ? 14 : 10, paddingVertical: IS_MOBILE ? 10 : 6, borderRadius: 8 }}
-      >
-        <Text style={{ color: '#F0C050', fontSize: IS_MOBILE ? 14 : 11, fontWeight: '700' }}>+1k bees</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        onPress={killPopulation}
-        style={{ position: 'absolute', bottom: IS_MOBILE ? 24 : 16, right: IS_MOBILE ? 108 : 88, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: IS_MOBILE ? 14 : 10, paddingVertical: IS_MOBILE ? 10 : 6, borderRadius: 8 }}
-      >
-        <Text style={{ color: '#FF6060', fontSize: IS_MOBILE ? 14 : 11, fontWeight: '700' }}>-1k bees</Text>
-      </TouchableOpacity>
+      {IS_MOBILE
+        ? <MobileControls speed={simSpeed} onSelect={setSimSpeed} onBoost={boostPopulation} onKill={killPopulation} />
+        : <>
+            <SpeedControl speed={simSpeed} onSelect={setSimSpeed} />
+            <TouchableOpacity
+              onPress={boostPopulation}
+              style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+            >
+              <Text style={{ color: '#F0C050', fontSize: 11, fontWeight: '700' }}>+1k bees</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={killPopulation}
+              style={{ position: 'absolute', bottom: 16, right: 88, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+            >
+              <Text style={{ color: '#FF6060', fontSize: 11, fontWeight: '700' }}>-1k bees</Text>
+            </TouchableOpacity>
+          </>
+      }
 
       {/* Box management buttons — shown when hive is open */}
       {exposedBox && (
