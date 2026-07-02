@@ -1062,7 +1062,7 @@ let globalSimSpeed = 1;
 let globalSimTimeMs = 0;  // accumulated simulated milliseconds since load
 let globalBeeInterval: ReturnType<typeof setInterval> | null = null;
 let onBeeCountUpdate: ((total: number) => void) | null = null; // registered by the hook
-let onForagerUpdate: ((foragers: OutsideForager[], stored: number) => void) | null = null;
+let onForagerUpdate: ((outside: OutsideForager[], stored: number) => void) | null = null;
 let _beeTickN = 0; // throttle population display updates
 let globalPauseNow: number | null = null;  // real timestamp when paused, null when running
 let globalLastActiveSpeed: number = 1;     // speed just before last pause / current speed
@@ -1098,19 +1098,23 @@ type ResourceCellStore = Record<string, ResourceCell>; // "${frameKey}:${r}:${c}
 const resourceCells: ResourceCellStore = {};
 
 interface OutsideForager {
-  id: number;             // unique visual ID
-  spawnTime: number;      // wall time when bee exited the hive
+  id: number;
+  spawnTime: number;      // wall time when the bee leaves the hive
   returnTime: number;     // wall time when forager returns to hive
   homeFrame: string;      // frame the bee originated from
   load: 'nectar' | 'pollen';
   bornAt: number; waxUnits: number; isBuilder: boolean;
 }
 const outsideForagers: OutsideForager[] = [];
-let foragerIdCounter = 0;
+let foragerIdCounter = 1;
 
 let onResourceUpdate: (() => void) | null = null; // registered by hook to trigger re-render
 let getBroodCells: (() => Record<string, number>) | null = null; // registered by hook
 let getDrawnCells: (() => Record<string, string[]>) | null = null; // registered by hook
+
+function emitForagerUpdate() {
+  if (onForagerUpdate) onForagerUpdate([...outsideForagers], Object.keys(resourceCells).length);
+}
 
 // Fraction of bees in the edge zone that cross per tick (~15 %).
 const MIGRATE_EDGE = 2;    // px from left/right boundary
@@ -1174,6 +1178,7 @@ function startGlobalBeeTick() {
       // ── Forager / resource logic ─────────────────────────────────────────────
       const speed2 = globalSimSpeed;
       let resourceChanged = false;
+      let foragerRosterChanged = false;
       const broodSnap = getBroodCells?.() ?? {};
 
       // Debug: log forager stats every ~5 seconds of real time
@@ -1206,10 +1211,10 @@ function startGlobalBeeTick() {
         for (let i = outsideForagers.length - 1; i >= 0; i--) {
           const of_ = outsideForagers[i];
           if (now < of_.returnTime) continue;
-          if (!bottomFrames2.length) { console.warn('[forager] no bottom frames, discarding returning bee'); outsideForagers.splice(i, 1); continue; }
+          if (!bottomFrames2.length) { console.warn('[forager] no bottom frames, discarding returning bee'); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
           const targetFk = bottomFrames2[Math.floor(Math.random() * bottomFrames2.length)];
           const store = frameBeeStore[targetFk];
-          if (!store) { console.warn('[forager] no store for', targetFk, 'discarding'); outsideForagers.splice(i, 1); continue; }
+          if (!store) { console.warn('[forager] no store for', targetFk, 'discarding'); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
           console.log(`[forager] bee RETURNS to frame=${targetFk} carrying=${of_.load}`);
           const injectX = COMB_W * (0.2 + Math.random() * 0.6);
           const newBee: SimBee = {
@@ -1221,6 +1226,7 @@ function startGlobalBeeTick() {
           };
           store.bees = [...store.bees, newBee];
           outsideForagers.splice(i, 1);
+          foragerRosterChanged = true;
         }
       }
 
@@ -1419,6 +1425,7 @@ function startGlobalBeeTick() {
                   homeFrame: fk, load: tripLoad,
                   bornAt: bee.bornAt, waxUnits: bee.waxUnits, isBuilder: bee.isBuilder,
                 });
+                foragerRosterChanged = true;
                 toRemove.add(bee.id);
                 return bee;
               }
@@ -1487,13 +1494,14 @@ function startGlobalBeeTick() {
       }
 
       if (resourceChanged && onResourceUpdate) onResourceUpdate();
+      if (foragerRosterChanged) emitForagerUpdate();
     }
     // Update population counter once per second (~1000ms / 80ms = 12 ticks)
     if (_beeTickN % 12 === 0 && onBeeCountUpdate) {
       const total = Math.min(MAX_COLONY_SIZE,
         Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0));
       onBeeCountUpdate(total);
-      if (onForagerUpdate) onForagerUpdate([...outsideForagers], Object.keys(resourceCells).length);
+      emitForagerUpdate();
     }
     for (const cb of beeTickListeners) cb();
   }, BEE_TICK_MS);
@@ -1698,8 +1706,8 @@ function useHiveSimulation() {
   const pauseStartRef       = useRef<number | null>(null);
   const lastActiveSpeedRef  = useRef(1); // speed just before last pause
 
-  const [totalAdultBees, setTotalAdultBees]         = useState(0);
-  const [foragerStats, setForagerStats]             = useState({ outside: 0, stored: 0 });
+  const [totalAdultBees, setTotalAdultBees] = useState(0);
+  const [foragerStats, setForagerStats]     = useState({ outside: 0, stored: 0 });
   const [outsideForagersSnap, setOutsideForagersSnap] = useState<OutsideForager[]>([]);
   const [broodVersion, setBroodVersion]     = useState(0);
   const [resourceVersion, setResourceVersion] = useState(0);
@@ -1884,7 +1892,10 @@ function useHiveSimulation() {
         resourceCells[key] = { ...resourceCells[key], depositedAt: resourceCells[key].depositedAt + pauseDuration };
       }
       // Shift forager returnTimes so they don't all flood back at once after a long pause
-      for (const of_ of outsideForagers) of_.returnTime += pauseDuration;
+      for (const of_ of outsideForagers) {
+        of_.spawnTime += pauseDuration;
+        of_.returnTime += pauseDuration;
+      }
       // If unpausing at a different speed than before the pause, also rescale timestamps
       if (prePauseSpeed !== newSpeed) {
         const ratio = prePauseSpeed / newSpeed;
@@ -1900,7 +1911,10 @@ function useHiveSimulation() {
         for (const key of Object.keys(resourceCells)) {
           resourceCells[key] = { ...resourceCells[key], depositedAt: rescalePast(resourceCells[key].depositedAt) };
         }
-        for (const of_ of outsideForagers) of_.returnTime = rescaleFuture(of_.returnTime);
+        for (const of_ of outsideForagers) {
+          of_.spawnTime = rescalePast(of_.spawnTime);
+          of_.returnTime = rescaleFuture(of_.returnTime);
+        }
       }
       lastActiveSpeedRef.current = newSpeed;
       simSpeedRef.current = newSpeed;
@@ -1932,6 +1946,10 @@ function useHiveSimulation() {
     for (const key of Object.keys(resourceCells)) {
       resourceCells[key] = { ...resourceCells[key], depositedAt: rescalePast(resourceCells[key].depositedAt) };
     }
+    for (const of_ of outsideForagers) {
+      of_.spawnTime = rescalePast(of_.spawnTime);
+      of_.returnTime = rescaleFuture(of_.returnTime);
+    }
     lastActiveSpeedRef.current = newSpeed;
     simSpeedRef.current = newSpeed;
     globalSimSpeed = newSpeed;
@@ -1953,6 +1971,8 @@ function useHiveSimulation() {
     for (const k of Object.keys(frameBeeStore)) delete frameBeeStore[k];
     for (const k of Object.keys(resourceCells)) delete resourceCells[k];
     outsideForagers.length = 0;
+    foragerIdCounter = 1;
+    setOutsideForagersSnap([]);
     // Load saved resources, validating each key against the current cell grid.
     // Old saves may have r:c values outside the current grid, or as floats — discard/normalize.
     if (state.resourceCells) {
@@ -2023,9 +2043,9 @@ function useHiveSimulation() {
     // Register the population display callback and start the global tick
     onBeeCountUpdate = (n) => { totalAdultBeesRef.current = n; setTotalAdultBees(n); };
     onResourceUpdate = () => setResourceVersion(v => v + 1);
-    onForagerUpdate = (foragers, stored) => {
-      setForagerStats({ outside: foragers.length, stored });
-      setOutsideForagersSnap([...foragers]);
+    onForagerUpdate = (outside, stored) => {
+      setOutsideForagersSnap(outside);
+      setForagerStats({ outside: outside.length, stored });
     };
     getBroodCells  = () => broodRef.current;
     getDrawnCells  = () => drawnCellsRef.current;
@@ -2374,10 +2394,10 @@ function useHiveSimulation() {
   }, []);
 
   return {
-    queenRef, queenFrameKey, totalAdultBees, foragerStats, layCount, getCellOverrides,
+    queenRef, queenFrameKey, totalAdultBees, foragerStats, outsideForagersSnap, layCount, getCellOverrides,
     boxStack, boxFrames, drawnCells,
     simSpeed, setSimSpeed, boostPopulation, killPopulation,
-    getCellInfo, outsideForagersSnap,
+    getCellInfo,
     addBox, removeBox, addFrame, removeFrame,
   };
 }
@@ -2502,6 +2522,19 @@ function makePath(
   return { xs, ys };
 }
 
+type ForagerFlightPlan = {
+  id: number;
+  outXs: number[]; outYs: number[];
+  inXs: number[]; inYs: number[];
+  outFlyDuration: number;
+  inFlyDuration: number;
+  landX: number;
+  walkDuration: number;
+  size: number;
+  load: 'nectar' | 'pollen';
+  wobbleAmp: number; wobblePeriod: number;
+};
+
 function seeded(seed: number) {
   let s = seed;
   return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
@@ -2572,120 +2605,103 @@ const CLOUD_DATA: CloudDatum[] = (() => {
   ];
 })();
 
+function makeForagerFlightPlan(forager: OutsideForager): ForagerFlightPlan {
+  const rand = seeded(forager.id * 97 + 17);
+  const boardHalf = (HIVE_W + 14) / 2;
+  const entHalf   = ENTRANCE_W / 2;
+  const side = rand() > 0.5 ? 1 : -1;
+  const landX = ENT_X + side * (entHalf + 5 + rand() * (boardHalf - entHalf - 8));
+  const offTop = rand() > 0.3;
+  const farX = offTop ? ENT_X + side * (50 + rand() * W * 0.38) : (side > 0 ? W + 60 : -60);
+  const farY = offTop ? -(25 + rand() * 60) : LAND_Y - (70 + rand() * H * 0.28);
+  const outPath = makePath(landX, LAND_Y, landX + side * 20, LAND_Y - 35, farX - side * 45, farY + 65, farX, farY);
+  const inPath = makePath(farX, farY, farX - side * 45, farY + 65, landX + side * 20, LAND_Y - 35, landX, LAND_Y);
+  return {
+    id: forager.id, outXs: outPath.xs, outYs: outPath.ys, inXs: inPath.xs, inYs: inPath.ys,
+    outFlyDuration: 1800 + rand() * 1200,
+    inFlyDuration: 2800 + rand() * 1800,
+    landX, walkDuration: Math.abs(landX - ENT_X) * 14,
+    size: 1.5 + rand() * 0.7,
+    load: forager.load,
+    wobbleAmp: 1 + rand() * 1, wobblePeriod: 220 + rand() * 130,
+  };
+}
 
-// ── ForagerBee — visual tied to a real outsideForager entry ──────────────────
+// ── Bee component ────────────────────────────────────────────────────────────
 
-function ForagerBee({ forager }: { forager: OutsideForager }) {
-  type Phase = 'walk_out' | 'fly_out' | 'away' | 'fly_in' | 'walk_in';
-  const [phase, setPhase] = useState<Phase>('walk_out');
+function samplePath(xs: number[], ys: number[], t: number) {
+  const clamped = Math.max(0, Math.min(1, t));
+  const idx = clamped * (xs.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.min(xs.length - 1, lo + 1);
+  const frac = idx - lo;
+  return {
+    x: xs[lo] + (xs[hi] - xs[lo]) * frac,
+    y: ys[lo] + (ys[hi] - ys[lo]) * frac,
+  };
+}
 
-  const { landX, flyOutXs, flyOutYs, flyInXs, flyInYs, flyOutMs, flyInMs, walkMs, size, wobbleAmp, wobblePeriod } = useMemo(() => {
-    const r = seeded(forager.id * 97 + 17);
-    const side = r() > 0.5 ? 1 : -1;
-    const boardHalf = (HIVE_W + 14) / 2;
-    const entHalf   = ENTRANCE_W / 2;
-    const lx  = ENT_X + side * (entHalf + 5 + r() * (boardHalf - entHalf - 8));
-    const offTop = r() > 0.3;
-    const fx  = offTop ? ENT_X + side * (50 + r() * W * 0.38) : (side > 0 ? W + 60 : -60);
-    const fy  = offTop ? -(25 + r() * 60) : LAND_Y - (70 + r() * H * 0.28);
-    const outPath = makePath(lx, LAND_Y, lx + side * 20, LAND_Y - 35, fx - side * 45, fy + 65, fx, fy);
-    const inPath  = makePath(fx, fy, fx - side * 45, fy + 65, lx + side * 20, LAND_Y - 35, lx, LAND_Y);
-    const tripMs  = Math.max(forager.returnTime - forager.spawnTime, 200);
-    const foMs    = Math.min(2500, tripMs * 0.35);
-    const fiMs    = Math.min(3000, tripMs * 0.40);
-    const wkMs    = Math.abs(lx - ENT_X) * 14;
-    return {
-      landX: lx, flyOutXs: outPath.xs, flyOutYs: outPath.ys,
-      flyInXs: inPath.xs, flyInYs: inPath.ys,
-      flyOutMs: foMs, flyInMs: fiMs, walkMs: wkMs,
-      size: 1.5 + r() * 0.7, wobbleAmp: 1 + r(), wobblePeriod: 220 + r() * 130,
-    };
-  }, [forager.id]);
-
-  const prog    = useRef(new Animated.Value(0)).current;
+function ForagerBee({ forager, now }: { forager: OutsideForager; now: number }) {
+  const data = useMemo(() => makeForagerFlightPlan(forager), [forager.id]);
   const wingAnim = useRef(new Animated.Value(0)).current;
-  const wobbleX  = useRef(new Animated.Value(0)).current;
-  const wobbleY  = useRef(new Animated.Value(0)).current;
 
-  // Wing flap + wobble loops (fire once on mount)
   useEffect(() => {
     Animated.loop(Animated.sequence([
       Animated.timing(wingAnim, { toValue: 1, duration: 60, useNativeDriver: true }),
       Animated.timing(wingAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
     ])).start();
-    Animated.loop(Animated.sequence([
-      Animated.timing(wobbleX, { toValue: 1,  duration: wobblePeriod,       useNativeDriver: true }),
-      Animated.timing(wobbleX, { toValue: -1, duration: wobblePeriod,       useNativeDriver: true }),
-    ])).start();
-    Animated.loop(Animated.sequence([
-      Animated.timing(wobbleY, { toValue: 1,  duration: wobblePeriod * 1.3, useNativeDriver: true }),
-      Animated.timing(wobbleY, { toValue: -1, duration: wobblePeriod * 1.3, useNativeDriver: true }),
-    ])).start();
   }, []);
 
-  // Phase-driven animation — each phase transition kicks off next segment
-  useEffect(() => {
-    prog.setValue(0);
-    if (phase === 'walk_out') {
-      Animated.timing(prog, { toValue: 1, duration: walkMs, easing: Easing.linear, useNativeDriver: false })
-        .start(({ finished }) => { if (finished) setPhase('fly_out'); });
-    } else if (phase === 'fly_out') {
-      Animated.timing(prog, { toValue: 1, duration: flyOutMs, easing: Easing.in(Easing.quad), useNativeDriver: false })
-        .start(({ finished }) => { if (finished) setPhase('away'); });
-    } else if (phase === 'away') {
-      const flyInStart = forager.returnTime - flyInMs - walkMs;
-      const delay = Math.max(0, flyInStart - Date.now());
-      const t = setTimeout(() => setPhase('fly_in'), delay);
-      return () => clearTimeout(t);
-    } else if (phase === 'fly_in') {
-      Animated.timing(prog, { toValue: 1, duration: flyInMs, easing: Easing.out(Easing.cubic), useNativeDriver: false })
-        .start(({ finished }) => { if (finished) setPhase('walk_in'); });
-    } else if (phase === 'walk_in') {
-      prog.setValue(1);
-      Animated.timing(prog, { toValue: 0, duration: walkMs, easing: Easing.linear, useNativeDriver: false }).start();
-    }
-  }, [phase]);
+  const t = globalPauseNow ?? now;
+  const outWalkEnd = forager.spawnTime + data.walkDuration;
+  const outFlyEnd = outWalkEnd + data.outFlyDuration;
+  const inWalkStart = forager.returnTime - data.walkDuration;
+  const inFlyStart = inWalkStart - data.inFlyDuration;
 
-  const N = flyOutXs.length;
-  const flyRange = useMemo(() => Array.from({ length: N }, (_, i) => i / (N - 1)), [N]);
-  const wingScaleY = wingAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.12] });
-  const wobOffX = wobbleX.interpolate({ inputRange: [-1, 0, 1], outputRange: [-wobbleAmp, 0, wobbleAmp] });
-  const wobOffY = wobbleY.interpolate({ inputRange: [-1, 0, 1], outputRange: [-wobbleAmp * 0.6, 0, wobbleAmp * 0.6] });
-
-  if (phase === 'away') return null;
-
-  // Position per phase
-  let tx: Animated.AnimatedInterpolation<number> | Animated.AnimatedAddition;
-  let ty: Animated.AnimatedInterpolation<number> | number;
-
-  if (phase === 'walk_out' || phase === 'walk_in') {
-    // walk_out: prog 0→1 means ENT_X→landX; walk_in: prog 1→0 means landX→ENT_X
-    const baseX = prog.interpolate({ inputRange: [0, 1], outputRange: [ENT_X, landX] });
-    tx = Animated.add(baseX, wobOffX);
-    ty = Animated.add(new Animated.Value(LAND_Y), wobOffY);
+  let x = 0, y = 0, opacity = 1;
+  if (t < forager.spawnTime || t >= forager.returnTime) return null;
+  if (t < outWalkEnd) {
+    const p = (t - forager.spawnTime) / data.walkDuration;
+    x = ENT_X + (data.landX - ENT_X) * p;
+    y = LAND_Y;
+    opacity = Math.min(1, Math.max(0, p / 0.12));
+  } else if (t < outFlyEnd) {
+    const p = (t - outWalkEnd) / data.outFlyDuration;
+    const eased = p * p;
+    const pt = samplePath(data.outXs, data.outYs, eased);
+    x = pt.x; y = pt.y;
+  } else if (t >= inFlyStart && t < inWalkStart) {
+    const p = (t - inFlyStart) / data.inFlyDuration;
+    const eased = 1 - Math.pow(1 - p, 3);
+    const pt = samplePath(data.inXs, data.inYs, eased);
+    x = pt.x; y = pt.y;
+  } else if (t >= inWalkStart) {
+    const p = (t - inWalkStart) / data.walkDuration;
+    x = data.landX + (ENT_X - data.landX) * p;
+    y = LAND_Y;
+    opacity = Math.max(0, Math.min(1, (1 - p) / 0.12));
   } else {
-    // fly_out or fly_in
-    const xs = phase === 'fly_out' ? flyOutXs : flyInXs;
-    const ys = phase === 'fly_out' ? flyOutYs : flyInYs;
-    const baseX = prog.interpolate({ inputRange: flyRange, outputRange: xs });
-    const baseY = prog.interpolate({ inputRange: flyRange, outputRange: ys });
-    tx = Animated.add(baseX, wobOffX);
-    ty = Animated.add(baseY, wobOffY);
+    return null;
   }
 
-  const bw = size * 3.5, bh = size;
-  // Pollen bees get yellow legs indicator; nectar bees slightly larger
-  const bodyColor = forager.load === 'pollen' ? '#D4800A' : '#E8960A';
+  const wobT = (t / data.wobblePeriod) + data.id * 0.37;
+  x += Math.sin(wobT) * data.wobbleAmp;
+  y += Math.cos(wobT * 0.77) * data.wobbleAmp * 0.6;
+
+  const wingScaleY = wingAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.12] });
+  const bw = data.size * 3.5, bh = data.size;
+  const bodyColor = data.load === 'pollen' ? '#B36B06' : '#E8960A';
   return (
-    <Animated.View style={{ position: 'absolute', top: 0, left: 0, transform: [{ translateX: tx as any }, { translateY: ty as any }] }}>
+    <Animated.View style={{ position: 'absolute', top: 0, left: 0, opacity, transform: [{ translateX: x }, { translateY: y }] }}>
       <Animated.View style={{ position: 'absolute', top: -bh * 0.9, left: 0, flexDirection: 'row', transform: [{ scaleY: wingScaleY }] }}>
         <View style={{ width: bw * 0.44, height: bh * 1.2, borderRadius: bh, backgroundColor: 'rgba(210,238,255,0.75)', marginRight: 1 }} />
         <View style={{ width: bw * 0.44, height: bh * 1.2, borderRadius: bh, backgroundColor: 'rgba(210,238,255,0.75)' }} />
       </Animated.View>
-      <View style={{ width: bw, height: bh, borderRadius: bh / 2, backgroundColor: bodyColor }} />
-      {forager.load === 'pollen' && (
-        <View style={{ position: 'absolute', left: bw * 0.7, top: bh * 0.1, width: bh * 0.7, height: bh * 0.7, borderRadius: bh * 0.35, backgroundColor: '#F5D020' }} />
-      )}
+      <View style={{ width: bw, height: bh, borderRadius: bh / 2, backgroundColor: bodyColor }}>
+        {data.load === 'pollen' && (
+          <View style={{ position: 'absolute', right: bw * 0.18, top: -bh * 0.18, width: bh * 0.65, height: bh * 0.65, borderRadius: bh, backgroundColor: '#F4D03F' }} />
+        )}
+      </View>
     </Animated.View>
   );
 }
@@ -3060,14 +3076,15 @@ export default function App() {
   const [pulledFrame, setPulledFrame] = useState<PulledFrame>(null);
 
   const {
-    queenRef, queenFrameKey, totalAdultBees, foragerStats, layCount, getCellOverrides,
+    queenRef, queenFrameKey, totalAdultBees, foragerStats, outsideForagersSnap, layCount, getCellOverrides,
     boxStack, boxFrames, drawnCells,
     simSpeed, setSimSpeed, boostPopulation, killPopulation,
-    getCellInfo, outsideForagersSnap,
+    getCellInfo,
     addBox, removeBox, addFrame, removeFrame,
   } = useHiveSimulation();
 
   const [devHoverInfo, setDevHoverInfo] = useState<CellInfoResult | null>(null);
+  const [sceneNow, setSceneNow] = useState(Date.now());
 
   const [vp, setVpState] = useState<Viewport>({ zoom: 1, x: 0, y: 0 });
   // On mobile, screen center in world coords is the crosshair inspect point
@@ -3086,6 +3103,11 @@ export default function App() {
     const r  = nz / v.zoom;
     setVp({ zoom: nz, x: mx * (1 - r) + v.x * r, y: my * (1 - r) + v.y * r });
   };
+
+  useEffect(() => {
+    const id = setInterval(() => setSceneNow(Date.now()), BEE_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -3288,7 +3310,7 @@ export default function App() {
           />
         )}
         <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
-          {outsideForagersSnap.map(f => <ForagerBee key={f.id} forager={f} />)}
+          {outsideForagersSnap.map(forager => <ForagerBee key={forager.id} forager={forager} now={sceneNow} />)}
         </View>
       </View>
     </View>
