@@ -51,7 +51,7 @@ const INSPECT_DWELL_MAX_MS   = 3_000;            //                             
 const MAX_COLONY_SIZE        = 50_000;
 const BROOD_CHECK_MS         = 1_000;
 const STORAGE_KEY            = 'hive-sim-v1';
-const APP_LAST_CHANGED       = '2:38 PM EDT';
+const APP_LAST_CHANGED       = '2:43 PM EDT';
 
 // ── Forager / resource constants ──────────────────────────────────────────────
 // Biology: foragers (21d+) make ~10 trips/day; ~60% nectar, ~40% pollen.
@@ -3009,7 +3009,7 @@ function getBeeActivity(bee: Pick<SimBee, 'foragerPhase' | 'receiverPhase' | 'ce
   return bee.dwell > 0 ? 'Resting on comb' : 'Walking on comb';
 }
 
-function getBeeDebugRows(limit = 500): BeeDebugRow[] {
+function getBeeDebugRows(): BeeDebugRow[] {
   const now = globalPauseNow ?? Date.now();
   const speed = globalPauseNow !== null ? globalLastActiveSpeed : Math.max(globalSimSpeed, 1);
   const rows: BeeDebugRow[] = [];
@@ -3037,7 +3037,7 @@ function getBeeDebugRows(limit = 500): BeeDebugRow[] {
       wax: bee.isBuilder ? `${bee.waxUnits.toFixed(1)}/${WAX_MAX_PER_BEE}` : '—',
     });
   }
-  return rows.sort((a, b) => a.id - b.id).slice(0, limit);
+  return rows.sort((a, b) => a.id - b.id);
 }
 
 function BeeDebugWindow({ onClose }: { onClose: () => void }) {
@@ -3047,7 +3047,7 @@ function BeeDebugWindow({ onClose }: { onClose: () => void }) {
     return () => clearInterval(id);
   }, []);
   return (
-    <View style={{ position: 'absolute', top: 72, right: 16, width: Math.min(560, W - 32), maxHeight: H - 120, zIndex: 950,
+    <View style={{ position: 'absolute', top: 72, left: 16, width: Math.min(560, W - 32), maxHeight: H - 120, zIndex: 950,
       backgroundColor: 'rgba(12,7,1,0.96)', borderWidth: 1, borderColor: '#6B4A12', borderRadius: 10, padding: 10 }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Text style={{ color: '#FFD36A', fontWeight: '800', fontSize: 14 }}>Bee Debug List ({rows.length}/{countLiveBees()})</Text>
@@ -3391,7 +3391,7 @@ export default function App() {
       <VersionText />
       <TouchableOpacity
         onPress={() => setShowBeeDebug(v => !v)}
-        style={{ position: 'absolute', top: 92, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.86)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#6B4A12' }}
+        style={{ position: 'absolute', top: 72, left: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.86)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#6B4A12' }}
       >
         <Text style={{ color: '#FFD36A', fontSize: 11, fontWeight: '800' }}>{showBeeDebug ? 'Hide bee list' : 'Show bee list'}</Text>
       </TouchableOpacity>
