@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import Svg, { Path, G, Ellipse } from 'react-native-svg';
 
 const { width: W, height: H } = Dimensions.get('window');
+const IS_MOBILE = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
 // Hive dimensions
 const HIVE_W = 160;
@@ -790,7 +791,7 @@ function PulledFrameView({
   box, idx, frameKey, instant, onReturn, boxStack, boxFrames,
   overrides, showQueen, queenRef,
   onRemove,
-  drawnCells, getCellInfo, onHoverInfo,
+  drawnCells, getCellInfo, onHoverInfo, crosshairWorld,
 }: {
   box: string; idx: number; frameKey: string; instant?: boolean;
   onReturn: () => void;
@@ -803,6 +804,7 @@ function PulledFrameView({
   drawnCells?: Record<string, string[]>;
   getCellInfo?: (frameKey: string, r: number, c: number) => CellInfoResult;
   onHoverInfo?: (info: CellInfoResult | null) => void;
+  crosshairWorld?: { x: number; y: number } | null;
 }) {
   const isMounted  = useRef(true);
   const returning  = useRef(false);
@@ -827,6 +829,20 @@ function PulledFrameView({
       Animated.spring(pos.y, { toValue: faceY, bounciness: 4, speed: 12, useNativeDriver: true }),
     ]).start();
   }, []);
+
+  // Mobile: resolve hover info from crosshair position at screen center
+  useEffect(() => {
+    if (!crosshairWorld || !onHoverInfo) return;
+    const combWorldX = faceX + FACE_SIDE_BAR;
+    const combWorldY = faceY + TOOLBAR_H + FACE_TOP_BAR;
+    const px = crosshairWorld.x - combWorldX;
+    const py = crosshairWorld.y - combWorldY;
+    if (px >= 0 && px <= COMB_W && py >= 0 && py <= COMB_H) {
+      resolveHoverAt(px, py);
+    } else {
+      onHoverInfo(null);
+    }
+  }, [crosshairWorld]);
 
   const handleReturn = () => {
     if (returning.current) return;
@@ -2854,9 +2870,24 @@ function fmtDuration(ms: number): string {
   return `${(ms / 86_400_000).toFixed(1)}d`;
 }
 
+function Crosshair() {
+  const SIZE = 30, THICK = 2, GAP = 5;
+  const bar: any = { position: 'absolute', backgroundColor: 'rgba(255,252,200,0.82)' };
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', left: W / 2 - SIZE / 2, top: H / 2 - SIZE / 2, width: SIZE, height: SIZE, zIndex: 500 }}>
+      <View style={[bar, { left: 0, top: (SIZE - THICK) / 2, width: SIZE / 2 - GAP, height: THICK }]} />
+      <View style={[bar, { right: 0, top: (SIZE - THICK) / 2, width: SIZE / 2 - GAP, height: THICK }]} />
+      <View style={[bar, { left: (SIZE - THICK) / 2, top: 0, width: THICK, height: SIZE / 2 - GAP }]} />
+      <View style={[bar, { left: (SIZE - THICK) / 2, bottom: 0, width: THICK, height: SIZE / 2 - GAP }]} />
+    </View>
+  );
+}
+
 function DevHUD({ info }: { info: CellInfoResult | null }) {
-  const LABEL: any = { color: '#A89060', fontSize: 9 };
-  const VALUE: any = { color: '#F5E0A0', fontSize: 10, fontWeight: '600', marginRight: 12 };
+  const fs = IS_MOBILE ? 11 : 9;
+  const fsV = IS_MOBILE ? 12 : 10;
+  const LABEL: any = { color: '#A89060', fontSize: fs };
+  const VALUE: any = { color: '#F5E0A0', fontSize: fsV, fontWeight: '600', marginRight: 12 };
   const now = Date.now();
   return (
     <View style={{
@@ -2867,7 +2898,9 @@ function DevHUD({ info }: { info: CellInfoResult | null }) {
       paddingHorizontal: 10, paddingVertical: 5, minHeight: 30,
     }} pointerEvents="none">
       {!info && (
-        <Text style={{ color: '#604830', fontSize: 9 }}>Hover over cells or bees to inspect</Text>
+        <Text style={{ color: '#604830', fontSize: IS_MOBILE ? 11 : 9 }}>
+          {IS_MOBILE ? 'Pan crosshair over a pulled frame to inspect' : 'Hover over cells or bees to inspect'}
+        </Text>
       )}
       {info && info.kind === 'brood' && (
         <>
@@ -2923,10 +2956,13 @@ function DevHUD({ info }: { info: CellInfoResult | null }) {
 const SPEED_STEPS = [0, 1, 10, 100, 1000, 10000];
 
 function SpeedControl({ speed, onSelect }: { speed: number; onSelect: (s: number) => void }) {
+  const px = IS_MOBILE ? 14 : 8;
+  const py = IS_MOBILE ? 10 : 5;
+  const fs = IS_MOBILE ? 14 : 11;
   return (
     <View style={{
-      position: 'absolute', bottom: 16, left: 16, zIndex: 300,
-      flexDirection: 'row', gap: 4,
+      position: 'absolute', bottom: IS_MOBILE ? 24 : 16, left: IS_MOBILE ? 12 : 16, zIndex: 300,
+      flexDirection: 'row', gap: IS_MOBILE ? 6 : 4,
     }}>
       {SPEED_STEPS.map(s => {
         const active = speed === s;
@@ -2936,14 +2972,14 @@ function SpeedControl({ speed, onSelect }: { speed: number; onSelect: (s: number
             onPress={() => onSelect(s)}
             style={{
               backgroundColor: active ? '#F0C050' : 'rgba(20,10,0,0.72)',
-              paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7,
+              paddingHorizontal: px, paddingVertical: py, borderRadius: 7,
               borderWidth: active ? 0 : 1,
               borderColor: '#F0C05044',
             }}
           >
             <Text style={{
               color: active ? '#1A0800' : '#F0C050',
-              fontSize: 11, fontWeight: '700',
+              fontSize: fs, fontWeight: '700',
             }}>{s === 0 ? '⏸' : `${s}×`}</Text>
           </TouchableOpacity>
         );
@@ -2968,6 +3004,10 @@ export default function App() {
   const [devHoverInfo, setDevHoverInfo] = useState<CellInfoResult | null>(null);
 
   const [vp, setVpState] = useState<Viewport>({ zoom: 1, x: 0, y: 0 });
+  // On mobile, screen center in world coords is the crosshair inspect point
+  const crosshairWorld = IS_MOBILE
+    ? { x: W / 2 - vp.x / vp.zoom, y: H / 2 - vp.y / vp.zoom }
+    : null;
   const vpRef   = useRef<Viewport>({ zoom: 1, x: 0, y: 0 });
   const rootRef = useRef<any>(null);
   const dragRef = useRef({ active: false, moved: false, startX: 0, startY: 0, lastX: 0, lastY: 0 });
@@ -2989,8 +3029,14 @@ export default function App() {
       const rect = el.getBoundingClientRect();
       zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - rect.left - W / 2, e.clientY - rect.top - H / 2);
     };
+    // Prevent browser-native pinch zoom and scroll on touch devices
+    const preventTouch = (e: TouchEvent) => e.preventDefault();
     el.addEventListener('wheel', handler, { passive: false });
-    return () => el.removeEventListener('wheel', handler);
+    el.addEventListener('touchmove', preventTouch, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', handler);
+      el.removeEventListener('touchmove', preventTouch);
+    };
   }, []);
 
   const onMouseDown  = (e: any) => { dragRef.current = { active: true, moved: false, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY }; };
@@ -3076,23 +3122,24 @@ export default function App() {
   const bbTop   = GROUND_Y - STAND_H - BB_H;
   const standTop = GROUND_Y - STAND_H;
   return (
-    <View ref={rootRef} style={[styles.root, { overflow: 'hidden', cursor: 'grab' } as any]} {...webProps}>
+    <View ref={rootRef} style={[styles.root, { overflow: 'hidden', cursor: IS_MOBILE ? 'default' : 'grab' } as any]} {...webProps}>
       <DevHUD info={devHoverInfo} />
+      {IS_MOBILE && <Crosshair />}
       <PopulationDisplay total={totalAdultBees} layCount={layCount} foragerOutside={foragerStats.outside} resourceStored={foragerStats.stored} simSpeed={simSpeed} />
       <SpeedControl speed={simSpeed} onSelect={setSimSpeed} />
 
       {/* Population cheat buttons (dev) */}
       <TouchableOpacity
         onPress={boostPopulation}
-        style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+        style={{ position: 'absolute', bottom: IS_MOBILE ? 24 : 16, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: IS_MOBILE ? 14 : 10, paddingVertical: IS_MOBILE ? 10 : 6, borderRadius: 8 }}
       >
-        <Text style={{ color: '#F0C050', fontSize: 11, fontWeight: '700' }}>+1k bees</Text>
+        <Text style={{ color: '#F0C050', fontSize: IS_MOBILE ? 14 : 11, fontWeight: '700' }}>+1k bees</Text>
       </TouchableOpacity>
       <TouchableOpacity
         onPress={killPopulation}
-        style={{ position: 'absolute', bottom: 16, right: 88, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+        style={{ position: 'absolute', bottom: IS_MOBILE ? 24 : 16, right: IS_MOBILE ? 108 : 88, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.82)', paddingHorizontal: IS_MOBILE ? 14 : 10, paddingVertical: IS_MOBILE ? 10 : 6, borderRadius: 8 }}
       >
-        <Text style={{ color: '#FF6060', fontSize: 11, fontWeight: '700' }}>-1k bees</Text>
+        <Text style={{ color: '#FF6060', fontSize: IS_MOBILE ? 14 : 11, fontWeight: '700' }}>-1k bees</Text>
       </TouchableOpacity>
 
       {/* Box management buttons — shown when hive is open */}
@@ -3168,6 +3215,7 @@ export default function App() {
             drawnCells={drawnCells}
             getCellInfo={getCellInfo}
             onHoverInfo={setDevHoverInfo}
+            crosshairWorld={crosshairWorld}
           />
         )}
         <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
