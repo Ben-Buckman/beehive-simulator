@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { View, StyleSheet, Animated, Easing, Dimensions, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, Animated, Easing, Dimensions, TouchableOpacity, Text, ScrollView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import Svg, { Path, G, Ellipse } from 'react-native-svg';
 
@@ -62,7 +62,8 @@ const RECEIVER_AGE_MAX_MS      = 18 * DAY_MS;
 const FORAGER_TRIP_MS          = 2  * HOUR_MS;   // simulated foraging trip duration
 const TROPHALLAXIS_MS          = 3  * 60_000;    // simulated trophallaxis duration
 const NECTAR_TO_HONEY_MS       = 2  * DAY_MS;    // simulated nectar→honey conversion
-const FORAGER_TRIP_PROB_PER_S  = 0.12;           // prob/sim-sec a forager starts a trip
+const FORAGER_TRIP_PROB_PER_S  = 50 / (24 * 60 * 60); // visible sim: ~50 trip checks/day per eligible forager
+const MAX_OUTSIDE_FORAGER_FRACTION = 0.08;            // cap visible flyers so the exterior never overwhelms frame bees
 
 // ── Comb drawing (wax building) ───────────────────────────────────────────────
 // Biology: colony draws ~1 full frame (≈1,800 hex cells in COMB_W×COMB_H) in
@@ -897,7 +898,7 @@ function PulledFrameView({
       const lx = dx * cosA + dy * sinA;  // local x (along body axis)
       const ly = -dx * sinA + dy * cosA; // local y (perpendicular)
       if ((lx / 2.2) ** 2 + (ly / 0.9) ** 2 <= 1) {
-        onHoverInfo({ kind: 'bee', bornAt: bee.bornAt, isBuilder: bee.isBuilder, waxUnits: bee.waxUnits, foragerPhase: bee.foragerPhase, load: bee.load });
+        onHoverInfo({ kind: 'bee', id: bee.id, bornAt: bee.bornAt, isBuilder: bee.isBuilder, waxUnits: bee.waxUnits, foragerPhase: bee.foragerPhase, receiverPhase: bee.receiverPhase, load: bee.load, activity: getBeeActivity(bee) });
         return;
       }
     }
@@ -1055,7 +1056,7 @@ function makeFramePopulation(frameIdx: number, salt: number, count?: number): Si
     const x = Math.max(2, Math.min(COMB_W - 3, rand() * COMB_W));
     const y = Math.max(1, Math.min(COMB_H - 2, rand() * COMB_H));
     const isBuilder = rand() < 0.10;
-    return { id: i, x, y, tx: x, ty: y, angle: rand() * Math.PI * 2,
+    return { id: allocateBeeId(), x, y, tx: x, ty: y, angle: rand() * Math.PI * 2,
              dwell: rand() * 800, greetCooldown: 0, greetedX: -1, greetedY: 0,
              waxUnits: isBuilder ? rand() * WAX_MAX_PER_BEE : 0, isBuilder, bornAt: Date.now() };
   });
@@ -1063,7 +1064,7 @@ function makeFramePopulation(frameIdx: number, salt: number, count?: number): Si
 
 // ── Persistent frame-bee store — single source of truth for all bees ──────────
 // Every frame's bees live here always; a global tick updates all of them.
-interface FrameStore { bees: SimBee[]; nextId: number; rand: () => number; frontierY?: number; }
+interface FrameStore { bees: SimBee[]; rand: () => number; frontierY?: number; }
 const frameBeeStore: Record<string, FrameStore> = {};
 const beeTickListeners = new Set<() => void>(); // FrameBeeLayer instances subscribe here
 let globalSimSpeed = 1;
@@ -1114,7 +1115,22 @@ interface OutsideForager {
   bornAt: number; waxUnits: number; isBuilder: boolean;
 }
 const outsideForagers: OutsideForager[] = [];
-let foragerIdCounter = 1;
+let nextBeeId = 1;
+const recycledBeeIds: number[] = [];
+function allocateBeeId(): number {
+  if (recycledBeeIds.length > 0) return recycledBeeIds.shift()!;
+  return nextBeeId++;
+}
+function releaseBeeId(id: number): void {
+  if (id > 0 && !recycledBeeIds.includes(id)) {
+    recycledBeeIds.push(id);
+    recycledBeeIds.sort((a, b) => a - b);
+  }
+}
+function releaseBeeIds(bees: SimBee[] | OutsideForager[]): void { bees.forEach(b => releaseBeeId(b.id)); }
+function countLiveBees(): number {
+  return Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0) + outsideForagers.length;
+}
 
 let onResourceUpdate: (() => void) | null = null; // registered by hook to trigger re-render
 let getBroodCells: (() => Record<string, number>) | null = null; // registered by hook
@@ -1147,6 +1163,8 @@ function startGlobalBeeTick() {
       for (const store of Object.values(frameBeeStore)) {
         // Natural death — bees older than their lifespan die
         if (store.bees.some(b => now - b.bornAt >= lifespanMs)) {
+          const dead = store.bees.filter(b => now - b.bornAt >= lifespanMs);
+          releaseBeeIds(dead);
           store.bees = store.bees.filter(b => now - b.bornAt < lifespanMs);
         }
         if (store.bees.length > 0) {
@@ -1188,7 +1206,7 @@ function startGlobalBeeTick() {
       }
       for (const { targetKey, bee } of migrations) {
         const tgt = frameBeeStore[targetKey];
-        if (tgt) tgt.bees = [...tgt.bees, { ...bee, id: tgt.nextId++ }];
+        if (tgt) tgt.bees = [...tgt.bees, bee];
       }
 
       // ── Forager / resource logic ─────────────────────────────────────────────
@@ -1227,14 +1245,14 @@ function startGlobalBeeTick() {
         for (let i = outsideForagers.length - 1; i >= 0; i--) {
           const of_ = outsideForagers[i];
           if (now < of_.returnTime) continue;
-          if (!bottomFrames2.length) { console.warn('[forager] no bottom frames, discarding returning bee'); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
+          if (!bottomFrames2.length) { console.warn('[forager] no bottom frames, discarding returning bee'); releaseBeeId(of_.id); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
           const targetFk = bottomFrames2[Math.floor(Math.random() * bottomFrames2.length)];
           const store = frameBeeStore[targetFk];
-          if (!store) { console.warn('[forager] no store for', targetFk, 'discarding'); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
+          if (!store) { console.warn('[forager] no store for', targetFk, 'discarding'); releaseBeeId(of_.id); outsideForagers.splice(i, 1); foragerRosterChanged = true; continue; }
           console.log(`[forager] bee RETURNS to frame=${targetFk} carrying=${of_.load}`);
           const injectX = COMB_W * (0.2 + Math.random() * 0.6);
           const newBee: SimBee = {
-            id: store.nextId++, x: injectX, y: COMB_H - 1,
+            id: of_.id, x: injectX, y: COMB_H - 1,
             tx: injectX, ty: 0, angle: -Math.PI / 2,
             dwell: 0, greetCooldown: 0, greetedX: -1, greetedY: 0,
             waxUnits: of_.waxUnits, isBuilder: of_.isBuilder, bornAt: of_.bornAt,
@@ -1435,7 +1453,7 @@ function startGlobalBeeTick() {
                 const tripLoad = Math.random() < 0.6 ? 'nectar' as const : 'pollen' as const;
                 if (Math.random() < 0.05) console.log(`[forager] bee EXITS frame=${fk} carrying=${tripLoad} returns in ${(tripReal/1000).toFixed(1)}s real`);
                 outsideForagers.push({
-                  id: foragerIdCounter++,
+                  id: bee.id,
                   spawnTime: now,
                   returnTime: now + tripReal * (0.85 + Math.random() * 0.3),
                   homeFrame: fk, load: tripLoad,
@@ -1466,8 +1484,10 @@ function startGlobalBeeTick() {
 
           // --- Initiate a foraging trip ---
           if (isForagerAge && !foragerPhase && !load) {
+            const liveBees = Math.max(1, countLiveBees());
+            const outsideCap = Math.max(3, Math.floor(liveBees * MAX_OUTSIDE_FORAGER_FRACTION));
             const probPerTick = FORAGER_TRIP_PROB_PER_S * (BEE_TICK_MS / 1000) * speed2;
-            if (Math.random() < probPerTick) {
+            if (outsideForagers.length < outsideCap && Math.random() < probPerTick) {
               if (Math.random() < 0.05) console.log(`[forager] trip START bee=${bee.id} frame=${fk} isBottomBox=${isBottomBox} age=${(simAge/DAY_MS).toFixed(1)}d`);
               return { ...bee, foragerPhase: 'seeking_exit', tx: bee.x, ty: COMB_H - 1 };
             }
@@ -1500,7 +1520,7 @@ function startGlobalBeeTick() {
         if (!bee) continue;
         const entryY = direction === 'down' ? 0 : COMB_H - 1;
         const continueY = direction === 'down' ? COMB_H - 1 : 0;
-        toStore.bees = [...toStore.bees, { ...bee, id: toStore.nextId++, y: entryY, ty: continueY }];
+        toStore.bees = [...toStore.bees, { ...bee, y: entryY, ty: continueY }];
         transitedIds.set(`${fromFk}:${beeId}`, 1);
       }
       if (transitedIds.size > 0) {
@@ -1515,7 +1535,7 @@ function startGlobalBeeTick() {
     // Update population counter once per second (~1000ms / 80ms = 12 ticks)
     if (_beeTickN % 12 === 0 && onBeeCountUpdate) {
       const total = Math.min(MAX_COLONY_SIZE,
-        Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0));
+        countLiveBees());
       onBeeCountUpdate(total);
       emitForagerUpdate();
     }
@@ -1540,7 +1560,6 @@ function getOrInitFrameStore(frameKey: string): FrameStore {
     }
     frameBeeStore[frameKey] = {
       bees,
-      nextId: count,
       rand: seeded(fi * 97 + 13 + seed),
     };
   }
@@ -1555,7 +1574,7 @@ function addEmergedBeeToStore(frameKey: string, r: number, c: number): void {
   const { cx, cy } = cellCoords(r, c);
   const isBuilder = Math.random() < 0.10;
   store.bees = [...store.bees, {
-    id: store.nextId++,
+    id: allocateBeeId(),
     x: cx, y: cy, tx: cx, ty: cy,
     angle: Math.random() * Math.PI * 2,
     dwell: 200 + Math.random() * 400,
@@ -1779,7 +1798,7 @@ function useHiveSimulation() {
           const toStore = getOrInitFrameStore(tfk);
           const tn = parseInt(tfk); const tfi = isNaN(tn) ? 0 : tn % 10;
           if (toStore.bees.length < frameBeeDensity(tfi) * 4) {
-            toStore.bees = [...toStore.bees, { ...allBees[i], id: toStore.nextId++ }];
+            toStore.bees = [...toStore.bees, { ...allBees[i] }];
           }
         }
       }
@@ -1847,7 +1866,7 @@ function useHiveSimulation() {
       const tn = parseInt(migrationTarget); const tfi = isNaN(tn) ? 0 : tn % 10;
       const canAdd = Math.max(0, frameBeeDensity(tfi) * 4 - toStore.bees.length);
       const migrating = frameBeeStore[removed].bees.slice(0, canAdd)
-        .map(bee => ({ ...bee, id: toStore.nextId++ }));
+        .map(bee => ({ ...bee }));
       toStore.bees = [...toStore.bees, ...migrating];
     }
     // Clean up removed frame
@@ -1997,7 +2016,8 @@ function useHiveSimulation() {
     for (const k of Object.keys(frameBeeStore)) delete frameBeeStore[k];
     for (const k of Object.keys(resourceCells)) delete resourceCells[k];
     outsideForagers.length = 0;
-    foragerIdCounter = 1;
+    nextBeeId = 1;
+    recycledBeeIds.length = 0;
     setOutsideForagersSnap([]);
     // Load saved resources, validating each key against the current cell grid.
     // Old saves may have r:c values outside the current grid, or as floats — discard/normalize.
@@ -2062,7 +2082,7 @@ function useHiveSimulation() {
     for (const fk of Object.values(bf).flat().filter((x): x is string => x !== null)) getOrInitFrameStore(fk);
     // Seed the display with the actual bee count before the first tick fires
     const initialTotal = Math.min(MAX_COLONY_SIZE,
-      Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0));
+      countLiveBees());
     totalAdultBeesRef.current = initialTotal;
     setTotalAdultBees(initialTotal);
     if (stateRef.current) stateRef.current.totalAdultBees = initialTotal;
@@ -2375,7 +2395,7 @@ function useHiveSimulation() {
         const y = 1 + Math.random() * (COMB_H - 2);
         const isBuilder = Math.random() < 0.10;
         additions.push({
-          id: store.nextId++, x, y, tx: x, ty: y,
+          id: allocateBeeId(), x, y, tx: x, ty: y,
           angle: Math.random() * Math.PI * 2,
           dwell: 200 + Math.random() * 400,
           greetCooldown: 0, greetedX: -1, greetedY: 0,
@@ -2387,7 +2407,7 @@ function useHiveSimulation() {
     }
     // Immediately update the display count
     const total = Math.min(MAX_COLONY_SIZE,
-      Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0));
+      countLiveBees());
     totalAdultBeesRef.current = total;
     setTotalAdultBees(total);
   }, []);
@@ -2410,11 +2430,13 @@ function useHiveSimulation() {
     }
     // Remove from each frame store
     for (const [fk, indices] of toRemove) {
+      const removed = frameBeeStore[fk].bees.filter((_, i) => indices.has(i));
+      releaseBeeIds(removed);
       frameBeeStore[fk].bees = frameBeeStore[fk].bees.filter((_, i) => !indices.has(i));
     }
     // Immediately update the display count
     const total = Math.min(MAX_COLONY_SIZE,
-      Object.values(frameBeeStore).reduce((a, s) => a + s.bees.length, 0));
+      countLiveBees());
     totalAdultBeesRef.current = total;
     setTotalAdultBees(total);
   }, []);
@@ -2901,7 +2923,7 @@ type Viewport = { zoom: number; x: number; y: number };
 type CellInfoResult =
   | { kind: 'brood'; r: number; c: number; frameKey: string; layTime: number; realAgoMs: number; simAgoMs: number; stage: string; emerged: boolean; realRemMs: number; simRemMs: number; }
   | { kind: 'static'; r: number; c: number; frameKey: string; cellType: string; }
-  | { kind: 'bee'; bornAt: number; isBuilder: boolean; waxUnits: number; foragerPhase?: string; load?: string | null; };
+  | { kind: 'bee'; id: number; bornAt: number; isBuilder: boolean; waxUnits: number; foragerPhase?: string; receiverPhase?: string; load?: string | null; activity: string; };
 
 // Worker bee behavioral maturation schedule (Seeley 1985, Winston 1987).
 // Each worker progresses through roles as glands develop with age.
@@ -2934,6 +2956,90 @@ function Crosshair() {
       <View style={[bar, { right: 0, top: (SIZE - THICK) / 2, width: SIZE / 2 - GAP, height: THICK }]} />
       <View style={[bar, { left: (SIZE - THICK) / 2, top: 0, width: THICK, height: SIZE / 2 - GAP }]} />
       <View style={[bar, { left: (SIZE - THICK) / 2, bottom: 0, width: THICK, height: SIZE / 2 - GAP }]} />
+    </View>
+  );
+}
+
+
+type BeeDebugRow = {
+  id: number;
+  location: string;
+  role: string;
+  activity: string;
+  age: string;
+  carrying: string;
+  wax: string;
+};
+
+function getBeeActivity(bee: Pick<SimBee, 'foragerPhase' | 'receiverPhase' | 'cellTarget' | 'dwell' | 'isBuilder'>): string {
+  if (bee.foragerPhase === 'seeking_exit') return 'Walking to hive entrance';
+  if (bee.foragerPhase === 'returning') return 'Returning from forage';
+  if (bee.foragerPhase === 'depositing') return 'Depositing forage load';
+  if (bee.receiverPhase === 'accepting') return 'Waiting to receive nectar';
+  if (bee.receiverPhase === 'processing') return 'Processing nectar';
+  if (bee.cellTarget) return 'Working target cell';
+  if (bee.isBuilder) return bee.dwell > 0 ? 'Builder resting' : 'Building / patrolling comb';
+  return bee.dwell > 0 ? 'Resting on comb' : 'Walking on comb';
+}
+
+function getBeeDebugRows(limit = 2000): BeeDebugRow[] {
+  const now = globalPauseNow ?? Date.now();
+  const speed = globalPauseNow !== null ? globalLastActiveSpeed : Math.max(globalSimSpeed, 1);
+  const rows: BeeDebugRow[] = [];
+  for (const [frameKey, store] of Object.entries(frameBeeStore)) {
+    for (const bee of store.bees) {
+      rows.push({
+        id: bee.id,
+        location: `Frame ${frameKey}`,
+        role: getBeeRole(bee.bornAt),
+        activity: getBeeActivity(bee),
+        age: fmtDuration((now - bee.bornAt) * speed),
+        carrying: bee.load ?? '—',
+        wax: bee.isBuilder ? `${bee.waxUnits.toFixed(1)}/${WAX_MAX_PER_BEE}` : '—',
+      });
+    }
+  }
+  for (const bee of outsideForagers) {
+    rows.push({
+      id: bee.id,
+      location: 'Outside',
+      role: getBeeRole(bee.bornAt),
+      activity: 'Flying / foraging',
+      age: fmtDuration((now - bee.bornAt) * speed),
+      carrying: bee.load,
+      wax: bee.isBuilder ? `${bee.waxUnits.toFixed(1)}/${WAX_MAX_PER_BEE}` : '—',
+    });
+  }
+  return rows.sort((a, b) => a.id - b.id).slice(0, limit);
+}
+
+function BeeDebugWindow({ onClose }: { onClose: () => void }) {
+  const [rows, setRows] = useState<BeeDebugRow[]>(() => getBeeDebugRows());
+  useEffect(() => {
+    const id = setInterval(() => setRows(getBeeDebugRows()), 500);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <View style={{ position: 'absolute', top: 72, right: 16, width: Math.min(560, W - 32), maxHeight: H - 120, zIndex: 950,
+      backgroundColor: 'rgba(12,7,1,0.96)', borderWidth: 1, borderColor: '#6B4A12', borderRadius: 10, padding: 10 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <Text style={{ color: '#FFD36A', fontWeight: '800', fontSize: 14 }}>Bee Debug List ({rows.length}/{countLiveBees()})</Text>
+        <TouchableOpacity onPress={onClose}><Text style={{ color: '#FFB0A0', fontWeight: '800' }}>Close</Text></TouchableOpacity>
+      </View>
+      <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderColor: '#3A2808', paddingBottom: 4 }}>
+        {['ID', 'Location', 'Role', 'Doing', 'Age', 'Load', 'Wax'].map((h, i) => (
+          <Text key={h} style={{ color: '#B89040', fontSize: 10, fontWeight: '700', flex: [0.45, 0.9, 1.1, 1.6, 0.8, 0.6, 0.7][i] }}>{h}</Text>
+        ))}
+      </View>
+      <ScrollView style={{ maxHeight: H - 190 }} contentContainerStyle={{ paddingBottom: 8 }} showsVerticalScrollIndicator>
+        {rows.map(row => (
+          <View key={`${row.location}-${row.id}`} style={{ flexDirection: 'row', paddingVertical: 3, borderBottomWidth: 1, borderColor: 'rgba(80,55,15,0.35)' }}>
+            {[`#${row.id}`, row.location, row.role, row.activity, row.age, row.carrying, row.wax].map((v, i) => (
+              <Text key={i} numberOfLines={1} style={{ color: '#F5E0A0', fontSize: 10, flex: [0.45, 0.9, 1.1, 1.6, 0.8, 0.6, 0.7][i] }}>{v}</Text>
+            ))}
+          </View>
+        ))}
+      </ScrollView>
     </View>
   );
 }
@@ -2979,8 +3085,12 @@ function DevHUD({ info }: { info: CellInfoResult | null }) {
       )}
       {info && info.kind === 'bee' && (
         <>
-          <Text style={LABEL}>Bee  </Text>
+          <Text style={LABEL}>Bee </Text>
+          <Text style={VALUE}>#{info.id}</Text>
+          <Text style={LABEL}>role </Text>
           <Text style={VALUE}>{getBeeRole(info.bornAt)}</Text>
+          <Text style={LABEL}>doing </Text>
+          <Text style={VALUE}>{info.activity}</Text>
           <Text style={LABEL}>sim age </Text>
           <Text style={VALUE}>{
             (() => {
@@ -3111,6 +3221,7 @@ export default function App() {
 
   const [devHoverInfo, setDevHoverInfo] = useState<CellInfoResult | null>(null);
   const [sceneNow, setSceneNow] = useState(Date.now());
+  const [showBeeDebug, setShowBeeDebug] = useState(false);
 
   const [vp, setVpState] = useState<Viewport>({ zoom: 1, x: 0, y: 0 });
   // On mobile, screen center in world coords is the crosshair inspect point
@@ -3240,6 +3351,13 @@ export default function App() {
       <DevHUD info={devHoverInfo} />
       {IS_MOBILE && <Crosshair />}
       <PopulationDisplay total={totalAdultBees} layCount={layCount} foragerOutside={foragerStats.outside} resourceStored={foragerStats.stored} simSpeed={simSpeed} />
+      <TouchableOpacity
+        onPress={() => setShowBeeDebug(v => !v)}
+        style={{ position: 'absolute', top: 92, right: 16, zIndex: 300, backgroundColor: 'rgba(20,10,0,0.86)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#6B4A12' }}
+      >
+        <Text style={{ color: '#FFD36A', fontSize: 11, fontWeight: '800' }}>{showBeeDebug ? 'Hide bee list' : 'Show bee list'}</Text>
+      </TouchableOpacity>
+      {showBeeDebug && <BeeDebugWindow onClose={() => setShowBeeDebug(false)} />}
       {IS_MOBILE
         ? <MobileControls speed={simSpeed} onSelect={setSimSpeed} onBoost={boostPopulation} onKill={killPopulation} />
         : <>
