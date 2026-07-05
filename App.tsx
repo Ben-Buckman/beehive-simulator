@@ -51,7 +51,7 @@ const INSPECT_DWELL_MAX_MS   = 3_000;            //                             
 const MAX_COLONY_SIZE        = 50_000;
 const BROOD_CHECK_MS         = 1_000;
 const STORAGE_KEY            = 'hive-sim-v1';
-const APP_LAST_CHANGED       = '2:43 PM EDT';
+const APP_LAST_CHANGED       = '9:42 AM EDT';
 
 // ── Forager / resource constants ──────────────────────────────────────────────
 // Biology: foragers (21d+) make ~10 trips/day; ~60% nectar, ~40% pollen.
@@ -893,6 +893,19 @@ function PulledFrameView({
 
   const resolveHoverAt = useCallback((px: number, py: number) => {
     if (!onHoverInfo) return;
+    if (showQueen && queenRef?.current) {
+      const q = queenRef.current;
+      const dx = px - q.x;
+      const dy = py - q.y;
+      const cosA = Math.cos(q.angle);
+      const sinA = Math.sin(q.angle);
+      const lx = dx * cosA + dy * sinA;
+      const ly = -dx * sinA + dy * cosA;
+      if ((lx / 2.7) ** 2 + (ly / 1.1) ** 2 <= 1) {
+        onHoverInfo({ kind: 'queen', frameKey, x: q.x, y: q.y, activity: 'Inspecting brood cells' });
+        return;
+      }
+    }
     // Check bees first — use ellipse hit test matching the actual SVG body shape
     for (const bee of beesForHit.current) {
       const dx = px - bee.x;
@@ -914,7 +927,7 @@ function PulledFrameView({
       if (d < bestDist) { bestDist = d; best = { r: cell.r, c: cell.c }; }
     }
     if (best && getCellInfo) onHoverInfo(getCellInfo(frameKey, best.r, best.c));
-  }, [frameKey, getCellInfo, cellsForHit, onHoverInfo]);
+  }, [frameKey, getCellInfo, cellsForHit, onHoverInfo, queenRef, showQueen]);
 
   const handleCombHover = useCallback((evt: any) => {
     const px: number = evt.nativeEvent?.offsetX ?? evt.nativeEvent?.locationX ?? -1;
@@ -2950,7 +2963,8 @@ type Viewport = { zoom: number; x: number; y: number };
 type CellInfoResult =
   | { kind: 'brood'; r: number; c: number; frameKey: string; layTime: number; realAgoMs: number; simAgoMs: number; stage: string; emerged: boolean; realRemMs: number; simRemMs: number; }
   | { kind: 'static'; r: number; c: number; frameKey: string; cellType: string; }
-  | { kind: 'bee'; id: number; bornAt: number; isBuilder: boolean; waxUnits: number; foragerPhase?: string; receiverPhase?: string; load?: string | null; activity: string; };
+  | { kind: 'bee'; id: number; bornAt: number; isBuilder: boolean; waxUnits: number; foragerPhase?: string; receiverPhase?: string; load?: string | null; activity: string; }
+  | { kind: 'queen'; frameKey: string; x: number; y: number; activity: string; };
 
 // Worker bee behavioral maturation schedule (Seeley 1985, Winston 1987).
 // Each worker progresses through roles as glands develop with age.
@@ -3143,6 +3157,18 @@ function DevHUD({ info }: { info: CellInfoResult | null }) {
             <Text style={LABEL}>carrying </Text>
             <Text style={{ color: info.load === 'pollen' ? '#E8A000' : '#FDFAD8', fontSize: 10, fontWeight: '600', marginRight: 12 }}>{info.load}</Text>
           </>}
+        </>
+      )}
+      {info && info.kind === 'queen' && (
+        <>
+          <Text style={LABEL}>Queen </Text>
+          <Text style={VALUE}>marked 2026</Text>
+          <Text style={LABEL}>frame </Text>
+          <Text style={VALUE}>{info.frameKey}</Text>
+          <Text style={LABEL}>doing </Text>
+          <Text style={VALUE}>{info.activity}</Text>
+          <Text style={LABEL}>position </Text>
+          <Text style={VALUE}>{info.x.toFixed(1)}, {info.y.toFixed(1)}</Text>
         </>
       )}
     </View>
